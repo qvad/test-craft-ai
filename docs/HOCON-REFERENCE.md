@@ -16,7 +16,7 @@ testcraft validate plan.hocon --strict
 The parser handles the following HOCON features automatically:
 
 - **Block comments** (`/* ... */`) — stripped before parsing (line comments `#` and `//` are also supported)
-- **`${?VAR} defaultValue` syntax** — the optional-substitution form is a compatibility notation only; the parser replaces it with the literal default value. The environment variable is **not** read at runtime with this syntax.
+- **`${?VAR} defaultValue` syntax** — standard HOCON optional substitution: checks `process.env.VAR` at parse time; uses its value if set, otherwise falls back to `defaultValue`. Supports string, numeric, and boolean defaults.
 - **Runtime environment variable access** — use `${env.VAR_NAME}` inside string values (e.g. `url = "http://${env.API_HOST}/api"`); this is resolved at execution time via `process.env`.
 - **`include` directives** (`include "other.hocon"`) — parsed recursively; included files must be accessible on the server's filesystem relative to the base plan file.
 - **Multi-line strings** (`"""..."""`) — preserved verbatim
@@ -25,7 +25,7 @@ The parser handles the following HOCON features automatically:
 > | Syntax | Resolved at | Source |
 > |--------|-------------|--------|
 > | `key = "literal"` | Parse time | Hardcoded |
-> | `key = ${?ENV} "default"` | Parse time | Always uses `"default"` |
+> | `key = ${?ENV} "default"` | Parse time | `process.env.ENV` if set, else `"default"` |
 > | `key = "${env.ENV_VAR}"` | Execution time | `process.env.ENV_VAR` |
 > | `url = "http://${baseUrl}/api"` | Execution time | Plan variable `baseUrl` |
 

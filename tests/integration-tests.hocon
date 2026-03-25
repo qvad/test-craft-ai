@@ -81,7 +81,7 @@ testcraft {
       {
         id   = "apply-namespace"
         name = "Apply-YB-Namespace"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
@@ -92,7 +92,7 @@ testcraft {
       {
         id   = "deploy-yugabyte"
         name = "Deploy-YugabyteDB"
-        type = "Shell-Command"
+        type = "shell-command"
         dependsOn = ["apply-namespace"]
         config {
           command   = "kubectl"
@@ -104,7 +104,7 @@ testcraft {
       {
         id   = "wait-pods-ready"
         name = "Wait-Pods-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         dependsOn = ["deploy-yugabyte"]
         config {
           command   = "kubectl"
@@ -116,7 +116,7 @@ testcraft {
       {
         id   = "wait-ysql-ready"
         name = "Wait-YSQL-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         dependsOn = ["wait-pods-ready"]
         config {
           command   = "bash"

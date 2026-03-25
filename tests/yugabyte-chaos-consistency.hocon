@@ -28,7 +28,7 @@ testcraft {
 
       {
         name = "Apply-Namespace"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
@@ -37,7 +37,7 @@ testcraft {
       },
       {
         name = "Deploy-YugabyteDB"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
@@ -46,7 +46,7 @@ testcraft {
       },
       {
         name = "Wait-Pods-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
@@ -55,7 +55,7 @@ testcraft {
       },
       {
         name = "Wait-YSQL-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
@@ -67,7 +67,7 @@ testcraft {
 
       {
         name = "Initialize-Database"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user = "${db_user}"
@@ -84,7 +84,7 @@ testcraft {
       },
       {
         name = "Seed-Accounts"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user = "${db_user}"
@@ -98,11 +98,11 @@ testcraft {
       },
       {
         name = "Execution-Parallel-Group"
-        type = "Parallel-Controller"
+        type = "parallel-controller"
         children = [
           {
             name = "Bank-Transfer-Loop"
-            type = "Loop-Controller"
+            type = "loop-controller"
             config {
               duration_ms = 120000
               concurrency = 20
@@ -110,7 +110,7 @@ testcraft {
             children = [
               {
                 name = "Randomize-Accounts"
-                type = "Script-Node"
+                type = "script-sampler"
                 config {
                   language = "javascript"
                   code = """
@@ -125,7 +125,7 @@ testcraft {
               },
               {
                 name = "Execute-Transfer-Transaction"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user = "${db_user}"
@@ -146,7 +146,7 @@ testcraft {
           },
           {
             name = "Node-Restart-Nemesis"
-            type = "Loop-Controller"
+            type = "loop-controller"
             config {
               duration_ms = 120000
               delay_ms = 15000
@@ -154,7 +154,7 @@ testcraft {
             children = [
               {
                 name = "Restart-TServer-Pod"
-                type = "Kubernetes-Node"
+                type = "k8s-pod"
                 config {
                   action = "restart-pod"
                   namespace = "yugabyte-db"
@@ -164,7 +164,7 @@ testcraft {
               },
               {
                 name = "Wait-for-Recovery"
-                type = "Constant-Timer"
+                type = "constant-timer"
                 config {
                   delay_ms = 10000
                 }
@@ -175,7 +175,7 @@ testcraft {
       },
       {
         name = "Verify-Total-Balance"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user = "${db_user}"

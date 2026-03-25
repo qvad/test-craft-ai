@@ -74,9 +74,11 @@ export class HoconParser {
   // Preprocess HOCON content to fix hocon-parser library compatibility:
   // 1. Normalize line endings (CRLF -> LF)
   // 2. Strip block comments (slash-star ... star-slash) which the parser doesn't support
-  // 3. Convert HOCON fallback syntax "${?VAR} defaultValue" -> "defaultValue"
-  //    The hocon-parser treats both ' and " as string delimiters and can't handle unquoted
-  //    number defaults after a substitution token, causing "Already met separator" errors.
+  // 3. Resolve HOCON optional-substitution syntax "${?VAR} defaultValue":
+  //    - If process.env[VAR] is set, use its value (as a JSON string)
+  //    - Otherwise use the literal default
+  //    The hocon-parser can't handle unquoted number defaults after a substitution token
+  //    (causes "Already met separator" errors), so we resolve these before parsing.
   private preprocessHocon(content: string): string {
     return content
       .replace(/\r\n/g, '\n')
@@ -89,12 +91,22 @@ export class HoconParser {
       // Convert bare include directives to key=value form: include "file" → include = "file"
       // This lets the hocon-parser produce include: "file" instead of mangling the key
       .replace(/^(\s*)include\s+("(?:[^"\\]|\\.)*")/gm, '$1include = $2')
-      // Convert "${?VAR} "default"" → "default" (quoted string fallback)
-      .replace(/\$\{[^}]+\}\s+("(?:[^"\\]|\\.)*")/g, '$1')
-      // Convert "${?VAR} number" → number (numeric fallback)
-      .replace(/\$\{[^}]+\}\s+([0-9]+(?:\.[0-9]+)?)\b/g, '$1')
-      // Convert "${?VAR} true/false" → true/false (boolean fallback)
-      .replace(/\$\{[^}]+\}\s+(true|false)\b/g, '$1');
+      // Resolve ${?VAR} "default" — check process.env first, fall back to quoted literal
+      .replace(/\$\{\?([^}]+)\}\s+("(?:[^"\\]|\\.)*")/g, (_m, varName, fallback) =>
+        process.env[varName] !== undefined ? JSON.stringify(process.env[varName]) : fallback,
+      )
+      // Resolve ${?VAR} number — check process.env first, fall back to numeric literal
+      .replace(/\$\{\?([^}]+)\}\s+([0-9]+(?:\.[0-9]+)?)\b/g, (_m, varName, fallback) =>
+        process.env[varName] !== undefined ? JSON.stringify(process.env[varName]) : fallback,
+      )
+      // Resolve ${?VAR} true/false — check process.env first, fall back to boolean literal
+      .replace(/\$\{\?([^}]+)\}\s+(true|false)\b/g, (_m, varName, fallback) =>
+        process.env[varName] !== undefined ? JSON.stringify(process.env[varName]) : fallback,
+      )
+      // Bare ${?VAR} with no fallback — use env var value or empty string if unset
+      .replace(/\$\{\?([^}]+)\}/g, (_m, varName) =>
+        process.env[varName] !== undefined ? JSON.stringify(process.env[varName]) : '""',
+      );
   }
 
   private async parseInternal(content: string): Promise<ParseResult> {
