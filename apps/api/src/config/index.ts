@@ -149,8 +149,12 @@ export const config = {
     retentionDays: parseInt(optionalEnv('AUDIT_RETENTION_DAYS', '90'), 10),
   },
 
-  // Runner images
+  // Runner images + the API URL that containers use to reach the GlobalVarsService
   runners: {
+    // Endpoint runner containers call to fetch/push global variables.
+    // In K8s: ClusterIP service URL.  In Docker Compose: host gateway address.
+    apiUrl: optionalEnv('TESTCRAFT_API_URL', 'http://testcraft-api:3000/api/v1'),
+
     java: optionalEnv('RUNNER_IMAGE_JAVA', 'testcraft/runner-java:latest'),
     python: optionalEnv('RUNNER_IMAGE_PYTHON', 'testcraft/runner-python:latest'),
     csharp: optionalEnv('RUNNER_IMAGE_CSHARP', 'testcraft/runner-csharp:latest'),
@@ -161,7 +165,7 @@ export const config = {
     ruby: optionalEnv('RUNNER_IMAGE_RUBY', 'testcraft/runner-ruby:latest'),
     php: optionalEnv('RUNNER_IMAGE_PHP', 'testcraft/runner-php:latest'),
     kotlin: optionalEnv('RUNNER_IMAGE_KOTLIN', 'testcraft/runner-kotlin:latest'),
-  } as Record<string, string>,
+  },
 };
 
 export type Config = typeof config;

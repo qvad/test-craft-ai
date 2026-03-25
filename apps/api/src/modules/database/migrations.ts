@@ -580,6 +580,25 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS test_plans_hocon CASCADE;
     `,
   },
+
+  {
+    version: '016',
+    name: 'create_execution_vars_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS execution_vars (
+        execution_id TEXT NOT NULL,
+        var_name     TEXT NOT NULL,
+        var_value    JSONB,
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (execution_id, var_name)
+      );
+
+      CREATE INDEX idx_execution_vars_execution ON execution_vars(execution_id);
+    `,
+    down: `
+      DROP TABLE IF EXISTS execution_vars;
+    `,
+  },
 ];
 
 // Run migrations on import if in development

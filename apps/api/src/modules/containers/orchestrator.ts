@@ -12,7 +12,8 @@ export class ContainerOrchestrator {
    * Get the runner image for a specific language
    */
   getRunnerImage(language: SupportedLanguage): string {
-    const image = config.runners[language];
+    const runners = config.runners as Record<string, string>;
+    const image = runners[language];
     if (!image) {
       throw new Error(`No runner image configured for language: ${language}`);
     }
@@ -75,6 +76,9 @@ export class ContainerOrchestrator {
               { name: 'TIMEOUT', value: timeout.toString() },
               { name: 'CODE_DIR', value: '/app/code' },
               { name: 'OUTPUT_DIR', value: '/app/output' },
+              // GlobalVarsService: runners use these to fetch/push global variables
+              { name: 'TESTCRAFT_API_URL', value: config.runners.apiUrl },
+              { name: 'TESTCRAFT_EXECUTION_ID', value: executionId },
             ],
             volumeMounts: [
               { name: 'code-volume', mountPath: '/app/code' },

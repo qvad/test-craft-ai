@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { orchestrator } from '../containers/orchestrator.js';
+import { globalVarsService } from '../vars/vars-service.js';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage, type ExecutionRequest, type LanguageDependencies } from '../containers/types.js';
 import { recordStepResult } from '../reporting/routes.js';
 import { broadcastExecutionEvent } from '../websocket/routes.js';
@@ -115,6 +116,8 @@ export async function executionRoutes(app: FastifyInstance): Promise<void> {
         for (const [key, value] of Object.entries(body.inputs)) {
           context.setVariable(key, value, { scope: 'plan' });
         }
+        // Also seed the GlobalVarsService so Docker/K8s runners can fetch them
+        await globalVarsService.seed(executionId, body.inputs);
       }
 
       // Broadcast execution started
@@ -168,6 +171,26 @@ export async function executionRoutes(app: FastifyInstance): Promise<void> {
         execution.status = result.status === 'success' ? 'completed' : 'failed';
         execution.result = result;
         execution.completedAt = new Date();
+      }
+
+      // Merge any extractedValues returned by the runner back into global vars
+      // so subsequent nodes in the plan see the updated state.
+      const runnerOutput = result.output as Record<string, unknown> | string | undefined;
+      const extractedValues =
+        runnerOutput &&
+        typeof runnerOutput === 'object' &&
+        runnerOutput.extracted_values &&
+        typeof runnerOutput.extracted_values === 'object' &&
+        !Array.isArray(runnerOutput.extracted_values)
+          ? (runnerOutput.extracted_values as Record<string, unknown>)
+          : undefined;
+
+      if (extractedValues && Object.keys(extractedValues).length > 0) {
+        await globalVarsService.setMany(executionId, extractedValues);
+        logger.debug(
+          { executionId, keys: Object.keys(extractedValues) },
+          '[vars] Merged runner extractedValues into global store',
+        );
       }
 
       const totalDuration = Date.now() - requestStartTime;

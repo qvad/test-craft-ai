@@ -36,6 +36,7 @@ import { testingRoutes } from './modules/testing/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { auditRoutes } from './modules/audit/routes.js';
 import { docsRoutes } from './modules/docs/openapi.js';
+import { varsRoutes } from './modules/vars/routes.js';
 
 /**
  * Create and configure the Fastify server
@@ -122,6 +123,9 @@ async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(testingRoutes, { prefix: '/api/v1' });
   await app.register(hoconRoutes, { prefix: '/api/v1' });
   await app.register(contextRoutes, { prefix: '/api/v1' });
+
+  // Global variables service (accessed by Docker/K8s runners — cluster-internal)
+  await app.register(varsRoutes, { prefix: '/api/v1/vars' });
 
   // AI routes with stricter rate limiting
   await app.register(async (aiApp) => {
