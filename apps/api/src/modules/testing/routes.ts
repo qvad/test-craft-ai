@@ -220,11 +220,20 @@ async function executeNodeTest(
     case 'http-request': {
       const { method, protocol, serverName, port, path, headers, bodyData, parameters, responseTimeout } = config;
 
-      let url = `${protocol || 'https'}://${serverName}`;
-      if (port && port !== 443 && port !== 80) {
-        url += `:${port}`;
+      // Support both a full `url` field (modern REST style) and JMeter-style
+      // split fields (protocol + serverName + port + path).
+      let url: string;
+      if (config.url) {
+        url = config.url as string;
+        // Append extra path segments if both url and path are set
+        if (path && !url.endsWith(path as string)) url += path;
+      } else {
+        url = `${protocol || 'https'}://${serverName}`;
+        if (port && port !== 443 && port !== 80) {
+          url += `:${port}`;
+        }
+        url += path || '/';
       }
-      url += path || '/';
 
       // Add query parameters
       if (parameters && Array.isArray(parameters) && parameters.length > 0) {
@@ -248,8 +257,9 @@ async function executeNodeTest(
         signal: controller.signal,
       };
 
-      if (bodyData && ['POST', 'PUT', 'PATCH'].includes(method as string)) {
-        fetchOptions.body = bodyData as string;
+      const requestBody = (config.body ?? bodyData) as string | undefined;
+      if (requestBody && ['POST', 'PUT', 'PATCH'].includes(method as string)) {
+        fetchOptions.body = typeof requestBody === 'object' ? JSON.stringify(requestBody) : requestBody;
       }
 
       try {

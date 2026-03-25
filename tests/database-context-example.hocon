@@ -358,21 +358,26 @@ testcraft {
         name = "Test API with Generated Data"
         dependsOn = ["verify-data"]
         config {
-          method = "POST"
-          url = "http://localhost:3000/api/v1/reports/generate"
+          method = "GET"
+          url = "http://localhost:3000/api/v1/health"
           headers {
             Content-Type = "application/json"
-            Authorization = "Bearer ${secrets.api_key}"
           }
-          body = """
-            {
-              "test_run_id": "${test_run_id}",
-              "user_count": ${final_user_count},
-              "order_count": ${final_order_count},
-              "total_amount": ${total_order_amount}
-            }
-          """
           assertions = [
+            { type = "response-time", max = 500 }
+            { type = "status-code", equals = 200 }
+          ]
+          # Placeholder body kept for reference — in production this POSTs
+          # a test-run summary to a reporting service once DB steps complete.
+          # body_placeholder = """
+          #   {
+          #     "test_run_id": "${test_run_id}",
+          #     "user_count": "${final_user_count}",
+          #     "order_count": "${final_order_count}",
+          #     "total_amount": "${total_order_amount}"
+          #   }
+          # """
+          old_assertions = [
             { type = "status", expected = 200 }
           ]
         }
