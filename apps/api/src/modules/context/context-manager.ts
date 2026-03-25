@@ -8,8 +8,16 @@
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 
-// Encryption key for sensitive data (should be from env in production)
-// Accepts any string — hashed to ensure exactly 32 bytes for AES-256
+// Encryption key for sensitive data.
+// WARNING: if CONTEXT_ENCRYPTION_KEY is not set, a random key is generated on every
+// startup — any previously encrypted sensitive variables in YugabyteDB become permanently
+// unreadable after a restart. In production this env var MUST be set to a stable secret.
+if (!process.env.CONTEXT_ENCRYPTION_KEY && process.env.NODE_ENV === 'production') {
+  // Log but don't throw — non-sensitive variables still work fine.
+  // Import logger lazily to avoid circular deps at module init time.
+  console.warn('[context-manager] CONTEXT_ENCRYPTION_KEY is not set in production. ' +
+    'Sensitive variables will be unreadable after an API restart. Set this env var.');
+}
 const RAW_ENCRYPTION_KEY = process.env.CONTEXT_ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
 const ENCRYPTION_KEY = crypto.createHash('sha256').update(RAW_ENCRYPTION_KEY).digest();
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';

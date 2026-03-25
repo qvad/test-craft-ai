@@ -5,7 +5,7 @@ LABEL maintainer="TestCraft AI"
 LABEL description="Java code runner for TestCraft AI"
 
 # Install necessary tools
-RUN apk add --no-cache bash curl
+RUN apk add --no-cache bash curl jq
 
 # Create working directory
 WORKDIR /app

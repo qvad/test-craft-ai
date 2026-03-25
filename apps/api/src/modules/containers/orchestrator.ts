@@ -48,7 +48,9 @@ export class ContainerOrchestrator {
       },
       spec: {
         restartPolicy: 'Never',
-        activeDeadlineSeconds: timeout,
+        // Give K8s 60s of grace over the inner timeout for scheduling/image-pull overhead.
+        // The runner.sh script enforces the actual timeout via `timeout ${TIMEOUT} ...`.
+        activeDeadlineSeconds: timeout + 60,
         serviceAccountName: 'testcraft-runner',
         securityContext: {
           runAsNonRoot: true,
@@ -150,6 +152,11 @@ export class ContainerOrchestrator {
     );
 
     try {
+      // Clean previous execution's artifacts to prevent state leakage between warm-pool reuses
+      await k8sClient.execInPod(podName, this.namespace, [
+        'sh', '-c', 'rm -rf /app/code/* /app/output/* 2>/dev/null; mkdir -p /app/code /app/output',
+      ]);
+
       // Install dependencies if provided
       if (request.dependencies) {
         const depStart = Date.now();
