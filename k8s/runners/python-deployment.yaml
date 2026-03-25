@@ -1,0 +1,63 @@
+# Python Runner Pool - Warm pods ready for execution
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-runner-pool
+  namespace: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: runner-pool
+    testcraft.io/language: python
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: testcraft
+      testcraft.io/language: python
+      testcraft.io/pool: warm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: testcraft
+        app.kubernetes.io/component: runner
+        testcraft.io/language: python
+        testcraft.io/pool: warm
+    spec:
+      serviceAccountName: testcraft-runner
+      containers:
+        - name: runner
+          image: testcraft/runner-python:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          env:
+            - name: CODE_DIR
+              value: "/app/code"
+            - name: OUTPUT_DIR
+              value: "/app/output"
+          volumeMounts:
+            - name: code-volume
+              mountPath: /app/code
+            - name: output-volume
+              mountPath: /app/output
+          readinessProbe:
+            exec:
+              command: ["python", "--version"]
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["python", "--version"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+      volumes:
+        - name: code-volume
+          emptyDir: {}
+        - name: output-volume
+          emptyDir: {}

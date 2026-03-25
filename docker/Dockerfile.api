@@ -1,0 +1,20 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY apps/api/package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy source
+COPY apps/api/src ./src
+COPY apps/api/tsconfig.json ./
+
+# Install tsx for running TypeScript
+RUN npm install -g tsx
+
+EXPOSE 3000
+
+CMD ["tsx", "src/main.ts"]

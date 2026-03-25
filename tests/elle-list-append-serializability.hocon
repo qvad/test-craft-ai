@@ -1,0 +1,449 @@
+testcraft {
+  version = "1.0"
+  plan {
+    name = "Elle-List-Append-Serializability"
+    description = """
+      Implements Jepsen Elle's list-append workload to verify strict serializability
+      (G0 / G1c / G2-item detection) in YugabyteDB.
+
+      Concurrent clients read shared keys and append integers. The full operation
+      history is recorded and analyzed post-run using Elle-style WR/WW/RW dependency
+      cycle detection (Kingsbury & Alvaro, VLDB 2021).
+
+      Expected result: no cycles → strict serializability holds.
+    """
+
+    variables {
+      yb_namespace     = "testcraft"
+      db_host          = "yugabyte.testcraft.svc.cluster.local"
+      db_port          = 5433
+      db_user          = "yugabyte"
+      db_pass          = "yugabyte"
+      db_name          = "testcraft"
+
+      test_duration_ms = 60000
+      concurrency      = 16
+      num_keys         = 6    # k0 … k5
+    }
+
+    nodes = [
+
+      # ── Phase 1: Start YugabyteDB in Kubernetes ────────────────────────────────
+
+      {
+        name = "Apply-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      },
+
+      # ── Phase 2: Schema ─────────────────────────────────────────────────────────
+
+      {
+        name = "Create-Elle-Schema"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user       = "${db_user}"
+          password   = "${db_pass}"
+          sql        = """
+            DROP TABLE IF EXISTS elle_history;
+            DROP TABLE IF EXISTS elle_list;
+            DROP SEQUENCE IF EXISTS elle_txn_seq;
+            DROP SEQUENCE IF EXISTS elle_val_seq;
+
+            -- Global monotonic counters
+            CREATE SEQUENCE elle_txn_seq START 1;
+            CREATE SEQUENCE elle_val_seq START 1;
+
+            -- Ordered per-key append log (PRIMARY KEY prevents duplicate values per key)
+            CREATE TABLE elle_list (
+              key_name   TEXT   NOT NULL,
+              value      BIGINT NOT NULL,
+              txn_id     BIGINT NOT NULL,
+              written_at TIMESTAMPTZ DEFAULT now(),
+              PRIMARY KEY (key_name, value)
+            );
+
+            -- Full operation log for Elle dependency analysis
+            CREATE TABLE elle_history (
+              id         BIGSERIAL   PRIMARY KEY,
+              txn_id     BIGINT      NOT NULL,
+              op_type    TEXT        NOT NULL,   -- 'read' | 'write'
+              key_name   TEXT        NOT NULL,
+              value      BIGINT,                 -- written value (writes) or last visible value (reads)
+              read_list  TEXT,                   -- comma-separated list seen at read time (reads)
+              committed  BOOLEAN     NOT NULL DEFAULT true,
+              ts         TIMESTAMPTZ DEFAULT now()
+            );
+
+            CREATE INDEX ON elle_history (txn_id);
+            CREATE INDEX ON elle_history (key_name, op_type);
+          """
+        }
+      },
+
+      # ── Workload ─────────────────────────────────────────────────────────────────
+
+      {
+        name = "Elle-List-Append-Workload"
+        type = "Loop-Controller"
+        config {
+          duration_ms = ${test_duration_ms}
+          concurrency = ${concurrency}
+        }
+        children = [
+          {
+            name = "Pick-Transaction-Keys"
+            type = "Script-Node"
+            config {
+              language = "javascript"
+              code     = """
+                // Pick 2 distinct random keys from k0..k5 (Fisher-Yates)
+                const n = 6;
+                const idx = Array.from({length: n}, (_, i) => i);
+                for (let i = n - 1; i > 0; i--) {
+                  const j = Math.floor(Math.random() * (i + 1));
+                  [idx[i], idx[j]] = [idx[j], idx[i]];
+                }
+                context.vars.txn_key1 = 'k' + idx[0];
+                context.vars.txn_key2 = 'k' + idx[1];
+              """
+            }
+          },
+          {
+            name = "Execute-Read-Append-Transaction"
+            type = "JDBC-Sampler"
+            config {
+              connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+              user       = "${db_user}"
+              password   = "${db_pass}"
+              sql        = """
+                DO $$
+                DECLARE
+                  v_txn    BIGINT := nextval('elle_txn_seq');
+                  v_val    BIGINT := nextval('elle_val_seq') * 1000;
+                  v_k1     TEXT   := '${txn_key1}';
+                  v_k2     TEXT   := '${txn_key2}';
+                  v_rl1    TEXT;
+                  v_rl2    TEXT;
+                  v_last1  BIGINT;
+                  v_last2  BIGINT;
+                BEGIN
+                  -- Read current state of k1
+                  SELECT coalesce(string_agg(value::text, ',' ORDER BY written_at), '')
+                  INTO v_rl1 FROM elle_list WHERE key_name = v_k1;
+                  SELECT max(value) INTO v_last1 FROM elle_list WHERE key_name = v_k1;
+
+                  INSERT INTO elle_history(txn_id, op_type, key_name, value, read_list)
+                  VALUES (v_txn, 'read', v_k1, v_last1, v_rl1);
+
+                  -- Append new value to k1
+                  INSERT INTO elle_list(key_name, value, txn_id) VALUES (v_k1, v_val, v_txn);
+                  INSERT INTO elle_history(txn_id, op_type, key_name, value)
+                  VALUES (v_txn, 'write', v_k1, v_val);
+
+                  -- Read current state of k2
+                  SELECT coalesce(string_agg(value::text, ',' ORDER BY written_at), '')
+                  INTO v_rl2 FROM elle_list WHERE key_name = v_k2;
+                  SELECT max(value) INTO v_last2 FROM elle_list WHERE key_name = v_k2;
+
+                  INSERT INTO elle_history(txn_id, op_type, key_name, value, read_list)
+                  VALUES (v_txn, 'read', v_k2, v_last2, v_rl2);
+
+                  -- Append different value to k2 (offset avoids key collisions)
+                  INSERT INTO elle_list(key_name, value, txn_id) VALUES (v_k2, v_val + 1, v_txn);
+                  INSERT INTO elle_history(txn_id, op_type, key_name, value)
+                  VALUES (v_txn, 'write', v_k2, v_val + 1);
+
+                EXCEPTION WHEN serialization_failure OR deadlock_detected THEN
+                  -- Mark this txn's records as aborted (Elle excludes aborted txns)
+                  UPDATE elle_history SET committed = false WHERE txn_id = v_txn;
+                  RAISE;
+                END;
+                $$;
+              """
+            }
+          }
+        ]
+      },
+
+      # ── Analysis ─────────────────────────────────────────────────────────────────
+
+      {
+        name = "Collect-History-For-Elle"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "elle_history_json"
+          sql            = """
+            SELECT json_agg(
+              json_build_object(
+                'txn_id',    txn_id,
+                'op_type',   op_type,
+                'key_name',  key_name,
+                'value',     value,
+                'read_list', read_list
+              )
+              ORDER BY id
+            )::text AS history_json
+            FROM elle_history
+            WHERE committed = true;
+          """
+        }
+      },
+
+      {
+        name = "Elle-Cycle-Detector"
+        type = "Script-Node"
+        config {
+          language = "javascript"
+          code     = """
+            // ═══════════════════════════════════════════════════════════════════════
+            // Elle Dependency Cycle Detector
+            // Reference: "Elle: Inferring Isolation Anomalies from Experimental
+            //             Observations" — Kingsbury & Alvaro, VLDB 2021
+            //
+            // Dependency relations:
+            //   WR  txA wrote x=v, txB read x=v                → txA wr→ txB
+            //   WW  txA wrote x=v1 before txB wrote x=v2       → txA ww→ txB
+            //   RW  txA read x without seeing v written by txB  → txA rw→ txB
+            //
+            // Anomaly classification:
+            //   G0      — WW cycle only (dirty write)
+            //   G1c     — WR or WW cycle (circular information flow)
+            //   G2-item — cycle containing ≥ 1 RW edge (anti-dependency / lost update)
+            //   G2      — G2-item + WR edges (predicate anti-dependency)
+            // ═══════════════════════════════════════════════════════════════════════
+
+            const raw = context.vars.elle_history_json;
+            if (!raw || raw === 'null') {
+              context.vars.elle_status = 'NO_HISTORY';
+              throw new Error('No committed history found — was the workload run?');
+            }
+
+            let history;
+            try { history = JSON.parse(raw); } catch(e) {
+              context.vars.elle_status = 'PARSE_ERROR';
+              throw new Error('Failed to parse history JSON: ' + e.message);
+            }
+
+            // ─ 1. Group by transaction ──────────────────────────────────────────────
+            const txns = new Map();
+            for (const op of history) {
+              const tid = String(op.txn_id);
+              if (!txns.has(tid)) txns.set(tid, { reads: [], writes: [] });
+              if (op.op_type === 'write') {
+                txns.get(tid).writes.push({ key: op.key_name, value: Number(op.value) });
+              } else {
+                const rl = op.read_list
+                  ? op.read_list.split(',').filter(Boolean).map(Number)
+                  : [];
+                txns.get(tid).reads.push({
+                  key: op.key_name,
+                  value: op.value != null ? Number(op.value) : null,
+                  readList: rl
+                });
+              }
+            }
+
+            // ─ 2. Index writes and infer per-key write order from readLists ─────────
+            const writeByKV  = new Map();   // "key:val" → txnId
+            const keyOrder   = new Map();   // key → [txnId in observed append order]
+
+            for (const [tid, ops] of txns)
+              for (const w of ops.writes)
+                writeByKV.set(w.key + ':' + w.value, tid);
+
+            // Walk all readLists to reconstruct per-key write ordering
+            for (const [, ops] of txns) {
+              for (const r of ops.reads) {
+                if (!keyOrder.has(r.key)) keyOrder.set(r.key, []);
+                const order = keyOrder.get(r.key);
+                for (const v of r.readList) {
+                  const writer = writeByKV.get(r.key + ':' + v);
+                  if (writer && !order.includes(writer)) order.push(writer);
+                }
+              }
+            }
+
+            // ─ 3. Build dependency edges ─────────────────────────────────────────────
+            const edges   = [];
+            const edgeSeen = new Set();
+
+            function addEdge(from, to, type, key, why) {
+              if (from === to) return;
+              const sig = from + '→' + to + ':' + type + ':' + key;
+              if (edgeSeen.has(sig)) return;
+              edgeSeen.add(sig);
+              edges.push({ from, to, type, key, why });
+            }
+
+            for (const [tid, ops] of txns) {
+              // WR edges
+              for (const r of ops.reads) {
+                for (const v of [...r.readList, ...(r.value != null ? [r.value] : [])]) {
+                  const writer = writeByKV.get(r.key + ':' + v);
+                  if (writer) addEdge(writer, tid, 'wr', r.key,
+                    writer + ' wrote ' + r.key + '=' + v + ', read by ' + tid);
+                }
+              }
+
+              // WW edges (from inferred key order)
+              for (const w of ops.writes) {
+                const order = keyOrder.get(w.key) || [];
+                const i = order.indexOf(tid);
+                if (i > 0) addEdge(order[i - 1], tid, 'ww', w.key,
+                  order[i - 1] + ' wrote ' + w.key + ' before ' + tid);
+              }
+
+              // RW anti-dependency edges
+              for (const r of ops.reads) {
+                const order = keyOrder.get(r.key) || [];
+                for (const writer of order) {
+                  if (writer === tid) continue;
+                  const wv = txns.get(writer)?.writes.find(w => w.key === r.key)?.value;
+                  if (wv != null && !r.readList.includes(wv))
+                    addEdge(tid, writer, 'rw', r.key,
+                      tid + ' read ' + r.key + ' without seeing ' + wv + ' (written by ' + writer + ')');
+                }
+              }
+            }
+
+            // ─ 4. Tarjan SCC — find all strongly-connected components (= cycles) ─────
+            let idx = 0;
+            const low = new Map(), num = new Map(), onStk = new Set(), stk = [];
+            const sccs = [];
+            const graph = new Map();
+            for (const [tid] of txns) graph.set(tid, []);
+            for (const e of edges) if (graph.has(e.from)) graph.get(e.from).push(e);
+
+            function scc(v) {
+              low.set(v, idx); num.set(v, idx++);
+              stk.push(v); onStk.add(v);
+              for (const e of (graph.get(v) || [])) {
+                if (!num.has(e.to)) { scc(e.to); low.set(v, Math.min(low.get(v), low.get(e.to))); }
+                else if (onStk.has(e.to)) low.set(v, Math.min(low.get(v), num.get(e.to)));
+              }
+              if (low.get(v) === num.get(v)) {
+                const comp = []; let w;
+                do { w = stk.pop(); onStk.delete(w); comp.push(w); } while (w !== v);
+                if (comp.length > 1) sccs.push(comp);
+              }
+            }
+            for (const [tid] of txns) if (!num.has(tid)) scc(tid);
+
+            // ─ 5. Classify anomalies ─────────────────────────────────────────────────
+            const anomalies = [];
+            for (const comp of sccs) {
+              const s   = new Set(comp);
+              const ces = edges.filter(e => s.has(e.from) && s.has(e.to));
+              const hasRW = ces.some(e => e.type === 'rw');
+              const hasWR = ces.some(e => e.type === 'wr');
+              const hasWW = ces.some(e => e.type === 'ww');
+              const type  = hasRW && hasWR ? 'G2'
+                          : hasRW         ? 'G2-item'
+                          : hasWR || hasWW ? 'G1c'
+                          :                 'G0';
+              anomalies.push({
+                type, size: comp.length,
+                txns: comp.slice(0, 4),
+                edges: ces.slice(0, 3).map(e => e.from + ' -[' + e.type + ':' + e.key + ']→ ' + e.to)
+              });
+            }
+
+            // ─ 6. Output ─────────────────────────────────────────────────────────────
+            context.vars.elle_status        = anomalies.length === 0 ? 'CONSISTENT' : 'ANOMALIES_DETECTED';
+            context.vars.elle_txn_count     = String(txns.size);
+            context.vars.elle_edge_count    = String(edges.length);
+            context.vars.elle_cycle_count   = String(sccs.length);
+            context.vars.elle_anomaly_count = String(anomalies.length);
+            context.vars.elle_anomalies     = JSON.stringify(anomalies, null, 2);
+
+            const lines = [
+              '',
+              '╔══════════════════════════════════════════════════╗',
+              '║       Elle List-Append Serializability Report    ║',
+              '╠══════════════════════════════════════════════════╣',
+              '║  Transactions : ' + String(txns.size).padEnd(33) + '║',
+              '║  Dep. edges   : ' + String(edges.length).padEnd(33) + '║',
+              '║  Cycles found : ' + String(sccs.length).padEnd(33) + '║',
+              '║  Anomalies    : ' + String(anomalies.length).padEnd(33) + '║',
+              '╠══════════════════════════════════════════════════╣',
+              anomalies.length === 0
+                ? '║  ✓ CONSISTENT — strict serializability holds    ║'
+                : '║  ✗ FAILED    — anomalies detected below         ║',
+              '╚══════════════════════════════════════════════════╝',
+            ];
+            if (anomalies.length > 0) {
+              lines.push('');
+              for (const a of anomalies)
+                lines.push('  [' + a.type + '] txns=' + a.size + '  edges: ' + a.edges.join(' | '));
+            }
+            console.log(lines.join('\n'));
+
+            if (anomalies.length > 0)
+              throw new Error(
+                'Elle detected ' + anomalies.length + ' anomaly(ies): ' +
+                anomalies.map(a => a.type).join(', ')
+              );
+          """
+        }
+      },
+
+      {
+        name = "Final-Statistics"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "elle_stats"
+          sql            = """
+            SELECT
+              count(DISTINCT txn_id)                                  AS total_txns,
+              count(*) FILTER (WHERE op_type = 'write')               AS total_writes,
+              count(*) FILTER (WHERE op_type = 'read')                AS total_reads,
+              count(*) FILTER (WHERE committed = false)               AS aborted_txns,
+              count(DISTINCT key_name)                                AS keys_active,
+              extract(epoch from (max(ts) - min(ts)))::int            AS duration_sec
+            FROM elle_history;
+          """
+        }
+      }
+
+    ]
+  }
+}

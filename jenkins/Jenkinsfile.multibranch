@@ -1,0 +1,169 @@
+/**
+ * TestCraft Multibranch Pipeline
+ *
+ * This pipeline automatically runs tests based on branch type:
+ * - feature/* branches: Run tests against dev environment
+ * - develop branch: Run tests against staging environment
+ * - main/master branch: Run tests against production (with approval)
+ * - release/* branches: Full regression suite
+ */
+
+@Library('testcraft') _
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+spec:
+  containers:
+  - name: testcraft
+    image: testcraft/cli:latest
+    command:
+    - cat
+    tty: true
+'''
+        }
+    }
+
+    environment {
+        TESTCRAFT_API_URL = credentials('testcraft-api-url')
+        TESTCRAFT_API_KEY = credentials('testcraft-api-key')
+    }
+
+    options {
+        timeout(time: 2, unit: 'HOURS')
+        timestamps()
+        ansiColor('xterm')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        stage('Determine Test Strategy') {
+            steps {
+                script {
+                    def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH
+
+                    if (branchName.startsWith('feature/')) {
+                        env.TEST_ENVIRONMENT = 'dev'
+                        env.TEST_PLANS = 'tests/smoke-tests.hocon'
+                        env.REQUIRE_APPROVAL = 'false'
+                    } else if (branchName == 'develop') {
+                        env.TEST_ENVIRONMENT = 'staging'
+                        env.TEST_PLANS = 'tests/integration-tests.hocon'
+                        env.REQUIRE_APPROVAL = 'false'
+                    } else if (branchName == 'main' || branchName == 'master') {
+                        env.TEST_ENVIRONMENT = 'production'
+                        env.TEST_PLANS = 'tests/smoke-tests.hocon'
+                        env.REQUIRE_APPROVAL = 'true'
+                    } else if (branchName.startsWith('release/')) {
+                        env.TEST_ENVIRONMENT = 'staging'
+                        env.TEST_PLANS = 'tests/regression-suite.hocon'
+                        env.REQUIRE_APPROVAL = 'false'
+                    } else {
+                        env.TEST_ENVIRONMENT = 'dev'
+                        env.TEST_PLANS = 'tests/smoke-tests.hocon'
+                        env.REQUIRE_APPROVAL = 'false'
+                    }
+
+                    echo "Branch: ${branchName}"
+                    echo "Environment: ${env.TEST_ENVIRONMENT}"
+                    echo "Test Plans: ${env.TEST_PLANS}"
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                expression { env.REQUIRE_APPROVAL == 'true' }
+            }
+            steps {
+                script {
+                    timeout(time: 30, unit: 'MINUTES') {
+                        input(
+                            message: "Deploy to ${env.TEST_ENVIRONMENT}?",
+                            submitter: 'qa-team,release-managers'
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                container('testcraft') {
+                    script {
+                        def strict = env.TEST_ENVIRONMENT == 'production'
+                        testcraft.validate(
+                            plan: env.TEST_PLANS,
+                            strict: strict
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                container('testcraft') {
+                    script {
+                        testcraft.run(
+                            plan: env.TEST_PLANS,
+                            environment: env.TEST_ENVIRONMENT,
+                            parallel: true,
+                            variables: [
+                                BUILD_NUMBER: env.BUILD_NUMBER,
+                                GIT_COMMIT: env.GIT_COMMIT,
+                                BRANCH_NAME: env.BRANCH_NAME
+                            ]
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Regression Suite') {
+            when {
+                expression {
+                    env.BRANCH_NAME?.startsWith('release/') ||
+                    env.BRANCH_NAME == 'main' ||
+                    env.BRANCH_NAME == 'master'
+                }
+            }
+            steps {
+                container('testcraft') {
+                    script {
+                        testcraft.run(
+                            plan: 'tests/regression-suite.hocon',
+                            environment: env.TEST_ENVIRONMENT,
+                            parallel: true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'test-reports/**/*', allowEmptyArchive: true
+            junit testResults: 'test-reports/test-report.xml', allowEmptyResults: true
+        }
+        success {
+            slackSend(
+                color: 'good',
+                message: ":white_check_mark: Tests passed on ${env.BRANCH_NAME} (${env.TEST_ENVIRONMENT})"
+            )
+        }
+        failure {
+            slackSend(
+                color: 'danger',
+                message: ":x: Tests failed on ${env.BRANCH_NAME} - ${env.BUILD_URL}"
+            )
+        }
+    }
+}

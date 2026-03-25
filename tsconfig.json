@@ -1,0 +1,21 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "module": "ESNext",
+    "baseUrl": ".",
+    "paths": {
+      "@testcraft/shared-types": ["packages/shared-types/src/index.ts"],
+      "@testcraft/shared-types/*": ["packages/shared-types/src/*"]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+<?php
+echo "Hello from PHP!\n";
+echo "PHP Version: " . phpversion() . "\n";
+
+// Test some basic operations
+$numbers = range(1, 10);
+$sum = array_sum($numbers);
+echo "Sum of 1-10: $sum\n";
+
+// Test JSON handling
+$data = [
+    'message' => 'Hello',
+    'numbers' => $numbers,
+    'sum' => $sum
+];
+echo "JSON: " . json_encode($data) . "\n";

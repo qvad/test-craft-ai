@@ -1,0 +1,14 @@
+import sys
+import json
+
+print("Hello from Python!")
+print(f"Python Version: {sys.version}")
+
+# Test some basic operations
+numbers = list(range(1, 11))
+total = sum(numbers)
+print(f"Sum of 1-10: {total}")
+
+# Test JSON handling
+data = {"message": "Hello", "numbers": numbers}
+print(f"JSON: {json.dumps(data)}")

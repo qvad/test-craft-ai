@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: runners
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: runner-quota
+  namespace: testcraft-runners
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "40"
+    limits.memory: 80Gi
+    pods: "100"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: runner-limits
+  namespace: testcraft-runners
+spec:
+  limits:
+    - default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "256Mi"
+      max:
+        cpu: "2"
+        memory: "2Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+      type: Container

@@ -1,0 +1,16 @@
+using System;
+using System.Linq;
+
+class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("Hello from C#!");
+        Console.WriteLine($".NET Version: {Environment.Version}");
+
+        // Test some basic operations
+        var numbers = Enumerable.Range(1, 10);
+        var sum = numbers.Sum();
+        Console.WriteLine($"Sum of 1-10: {sum}");
+    }
+}

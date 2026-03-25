@@ -1,0 +1,268 @@
+##
+# Kubernetes Network Policies for TestCraft AI
+# Implements least-privilege network access between components
+##
+
+---
+# Default deny all ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: testcraft
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Default deny all egress traffic (optional, can be restrictive)
+# Uncomment if you want strict egress control
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: default-deny-egress
+#   namespace: testcraft
+# spec:
+#   podSelector: {}
+#   policyTypes:
+#     - Egress
+
+---
+# Allow ingress to API from UI and external (via ingress controller)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: testcraft-api
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from UI pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app: testcraft-ui
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow from ingress controller namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow health checks from kubelet
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 3000
+
+---
+# Allow API to connect to YugabyteDB
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-to-database
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: testcraft-api
+  policyTypes:
+    - Egress
+  egress:
+    # Allow connection to YugabyteDB
+    - to:
+        - podSelector:
+            matchLabels:
+              app: yugabyte
+      ports:
+        - protocol: TCP
+          port: 5433  # YSQL port
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow external AI API calls
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Allow YugabyteDB to receive connections from API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yugabyte-ingress
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: yugabyte
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from API pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app: testcraft-api
+      ports:
+        - protocol: TCP
+          port: 5433  # YSQL
+        - protocol: TCP
+          port: 9042  # YCQL (if used)
+    # Allow internal YugabyteDB replication (for multi-node clusters)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: yugabyte
+      ports:
+        - protocol: TCP
+          port: 7100  # Master RPC
+        - protocol: TCP
+          port: 9100  # TServer RPC
+
+---
+# Allow UI to connect to API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ui-egress
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: testcraft-ui
+  policyTypes:
+    - Egress
+  egress:
+    # Allow connection to API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: testcraft-api
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Allow ingress to UI from external (via ingress controller)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ui-ingress
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: testcraft-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+
+---
+# Allow test runners to connect to API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-egress
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: runner
+  policyTypes:
+    - Egress
+  egress:
+    # Allow connection to API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: testcraft-api
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow external HTTP/HTTPS for test execution
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+---
+# Allow Prometheus to scrape metrics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-scrape
+  namespace: testcraft
+spec:
+  podSelector:
+    matchLabels:
+      app: testcraft-api
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from Prometheus namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 3000

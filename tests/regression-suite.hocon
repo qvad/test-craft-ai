@@ -1,0 +1,541 @@
+/**
+ * Regression Suite
+ *
+ * Full regression test suite for release validation
+ * Run time: ~1-2 hours
+ */
+
+testcraft {
+  plan {
+    name = "Regression Suite"
+    description = "Complete regression test suite for release validation"
+    version = "1.0"
+    tags = ["regression", "release", "full"]
+
+    config {
+      timeout = 7200000  # 2 hours
+      stopOnError = false
+      parallelExecution = true
+      maxConcurrent = 10
+      retryFailedTests = 2
+      screenshotOnFailure = true
+    }
+
+    variables {
+      yb_namespace = ${?YB_NAMESPACE} "testcraft"
+      baseUrl      = ${?BASE_URL} "https://api.example.com"
+      webUrl       = ${?WEB_URL} "https://app.example.com"
+      apiKey       = ${?API_KEY}
+      dbHost       = ${?DB_HOST} "yugabyte.testcraft.svc.cluster.local"
+      dbPort       = ${?DB_PORT} 5433
+      dbName       = ${?DB_NAME} "testcraft"
+      dbUser       = ${?DB_USER} "yugabyte"
+      dbPass       = ${?DB_PASS} "yugabyte"
+    }
+
+    # Include smoke tests
+    include "smoke-tests.hocon"
+
+    # Include integration tests
+    include "integration-tests.hocon"
+
+    nodes = [
+
+      # ── K8s: Start YugabyteDB ────────────────────────────────────────────────────
+
+      {
+        id   = "apply-namespace"
+        name = "Apply-YB-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "deploy-yugabyte"
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        dependsOn = ["apply-namespace"]
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-pods-ready"
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        dependsOn = ["deploy-yugabyte"]
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-ysql-ready"
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        dependsOn = ["wait-pods-ready"]
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      }
+
+      # ── Regression Tests ─────────────────────────────────────────────────────────
+
+      # ==========================================
+      # Database Tests
+      # ==========================================
+      {
+        id = "db-tests"
+        type = "transaction-controller"
+        name = "Database Tests"
+        children = [
+          {
+            id = "db-schema-validation"
+            type = "jdbc-request"
+            name = "Validate Schema"
+            config {
+              driver = "postgresql"
+              connectionString = "jdbc:postgresql://${variables.dbHost}:${variables.dbPort}/${variables.dbName}"
+              query = """
+                SELECT table_name, column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                ORDER BY table_name, ordinal_position
+              """
+              assertions = [
+                { type = "result-count", minimum = 10 }
+              ]
+            }
+          }
+
+          {
+            id = "db-indexes"
+            type = "jdbc-request"
+            name = "Check Indexes"
+            config {
+              driver = "postgresql"
+              connectionString = "jdbc:postgresql://${variables.dbHost}:${variables.dbPort}/${variables.dbName}"
+              query = """
+                SELECT indexname, tablename
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+              """
+              assertions = [
+                { type = "result-count", minimum = 5 }
+                { type = "contains-row", column = "indexname", pattern = ".*_pkey$" }
+              ]
+            }
+          }
+
+          {
+            id = "db-performance"
+            type = "jdbc-request"
+            name = "Query Performance Check"
+            config {
+              driver = "postgresql"
+              connectionString = "jdbc:postgresql://${variables.dbHost}:${variables.dbPort}/${variables.dbName}"
+              query = """
+                EXPLAIN ANALYZE
+                SELECT * FROM users WHERE email LIKE '%@example.com' LIMIT 100
+              """
+              assertions = [
+                { type = "execution-time", maxMs = 100 }
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # Message Queue Tests
+      # ==========================================
+      {
+        id = "mq-tests"
+        type = "transaction-controller"
+        name = "Message Queue Tests"
+        children = [
+          {
+            id = "kafka-produce"
+            type = "kafka-producer"
+            name = "Produce Test Message"
+            config {
+              bootstrapServers = ${?KAFKA_SERVERS} "localhost:9092"
+              topic = "test-events"
+              message = """
+                {
+                  "eventType": "test",
+                  "timestamp": "${__timestamp()}",
+                  "data": {"test": true}
+                }
+              """
+              extractors = [
+                { name = "kafka_offset", type = "header", key = "offset" }
+              ]
+            }
+          }
+
+          {
+            id = "kafka-consume"
+            type = "kafka-consumer"
+            name = "Consume Test Message"
+            dependsOn = ["kafka-produce"]
+            config {
+              bootstrapServers = ${?KAFKA_SERVERS} "localhost:9092"
+              topic = "test-events"
+              groupId = "regression-test-consumer"
+              timeout = 30000
+              assertions = [
+                { type = "message-received" }
+                { type = "json-path", path = "$.eventType", expected = "test" }
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # GraphQL Tests
+      # ==========================================
+      {
+        id = "graphql-tests"
+        type = "transaction-controller"
+        name = "GraphQL API Tests"
+        children = [
+          {
+            id = "graphql-query"
+            type = "graphql-request"
+            name = "Query Users"
+            config {
+              url = "${variables.baseUrl}/graphql"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              query = """
+                query GetUsers($limit: Int!) {
+                  users(limit: $limit) {
+                    id
+                    username
+                    email
+                    createdAt
+                  }
+                }
+              """
+              variables = {
+                limit = 10
+              }
+              assertions = [
+                { type = "no-errors" }
+                { type = "json-path", path = "$.data.users", isArray = true }
+              ]
+            }
+          }
+
+          {
+            id = "graphql-mutation"
+            type = "graphql-request"
+            name = "Create Resource"
+            config {
+              url = "${variables.baseUrl}/graphql"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              query = """
+                mutation CreateResource($input: ResourceInput!) {
+                  createResource(input: $input) {
+                    id
+                    name
+                    status
+                  }
+                }
+              """
+              variables = {
+                input = {
+                  name = "Test Resource"
+                  type = "integration-test"
+                }
+              }
+              extractors = [
+                { name = "resource_id", type = "json-path", path = "$.data.createResource.id" }
+              ]
+              assertions = [
+                { type = "no-errors" }
+                { type = "json-path", path = "$.data.createResource.status", expected = "created" }
+              ]
+            }
+          }
+
+          {
+            id = "graphql-subscription"
+            type = "websocket-request"
+            name = "Test Subscription"
+            config {
+              url = "${variables.baseUrl}/graphql"
+              protocol = "graphql-ws"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              message = """
+                {
+                  "type": "subscribe",
+                  "payload": {
+                    "query": "subscription { resourceUpdated { id status } }"
+                  }
+                }
+              """
+              timeout = 30000
+              assertions = [
+                { type = "connection-established" }
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # Security Tests
+      # ==========================================
+      {
+        id = "security-tests"
+        type = "transaction-controller"
+        name = "Security Tests"
+        children = [
+          {
+            id = "auth-required"
+            type = "http-request"
+            name = "Auth Required Check"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/users"
+              # No auth header
+              assertions = [
+                { type = "status", expected = 401 }
+              ]
+            }
+          }
+
+          {
+            id = "invalid-token"
+            type = "http-request"
+            name = "Invalid Token Rejected"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/users"
+              headers {
+                Authorization = "Bearer invalid-token-12345"
+              }
+              assertions = [
+                { type = "status", oneOf = [401, 403] }
+              ]
+            }
+          }
+
+          {
+            id = "sql-injection"
+            type = "http-request"
+            name = "SQL Injection Protection"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/users"
+              params {
+                search = "'; DROP TABLE users; --"
+              }
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "status", notExpected = 500 }
+                { type = "body-not-contains", value = "syntax error" }
+              ]
+            }
+          }
+
+          {
+            id = "xss-protection"
+            type = "http-request"
+            name = "XSS Protection"
+            config {
+              method = "POST"
+              url = "${variables.baseUrl}/comments"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+                Content-Type = "application/json"
+              }
+              body = """
+                {
+                  "content": "<script>alert('xss')</script>"
+                }
+              """
+              assertions = [
+                { type = "body-not-contains", value = "<script>" }
+              ]
+            }
+          }
+
+          {
+            id = "rate-limiting"
+            type = "loop-controller"
+            name = "Rate Limiting Test"
+            iterations = 100
+            config {
+              paceMs = 10
+            }
+            children = [
+              {
+                id = "rate-limited-request"
+                type = "http-request"
+                name = "Rapid Request"
+                config {
+                  method = "GET"
+                  url = "${variables.baseUrl}/health"
+                }
+              }
+            ]
+            assertions = [
+              { type = "some-responses", status = 429, minimum = 1 }
+            ]
+          }
+
+          {
+            id = "cors-headers"
+            type = "http-request"
+            name = "CORS Headers Check"
+            config {
+              method = "OPTIONS"
+              url = "${variables.baseUrl}/users"
+              headers {
+                Origin = "https://malicious-site.com"
+                Access-Control-Request-Method = "GET"
+              }
+              assertions = [
+                { type = "header-not-equals", header = "Access-Control-Allow-Origin", value = "*" }
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # AI-Powered Regression Checks
+      # ==========================================
+      {
+        id = "ai-regression"
+        type = "transaction-controller"
+        name = "AI Regression Analysis"
+        children = [
+          {
+            id = "ai-compare-baseline"
+            type = "ai-anomaly-detector"
+            name = "Compare with Baseline"
+            config {
+              baseline = "last-successful-release"
+              sensitivity = "high"
+              checkTypes = [
+                "response-structure"
+                "data-patterns"
+                "error-messages"
+                "performance-metrics"
+              ]
+              threshold = 0.95
+            }
+          }
+
+          {
+            id = "ai-contract-validation"
+            type = "ai-response-validator"
+            name = "API Contract Validation"
+            config {
+              openApiSpec = "specs/openapi.yaml"
+              validations = [
+                "All responses match OpenAPI schema"
+                "Required fields are always present"
+                "Enum values are valid"
+                "Date formats are consistent"
+              ]
+            }
+          }
+
+          {
+            id = "ai-generate-edge-cases"
+            type = "ai-test-generator"
+            name = "Generate Edge Cases"
+            config {
+              prompt = "Generate edge case tests for user registration API"
+              targetEndpoint = "${variables.baseUrl}/users"
+              scenarios = [
+                "boundary-values"
+                "special-characters"
+                "unicode-handling"
+                "empty-fields"
+                "max-length-inputs"
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # Load Test Verification
+      # ==========================================
+      {
+        id = "load-verification"
+        type = "thread-group"
+        name = "Load Test Verification"
+        config {
+          threads = 50
+          rampUp = 30
+          duration = 120
+          iterations = -1  # Run for duration
+        }
+        children = [
+          {
+            id = "load-get-products"
+            type = "http-request"
+            name = "GET Products Under Load"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/products"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "response-time", percentile = 99, maxMs = 3000 }
+              ]
+            }
+          }
+
+          {
+            id = "load-search"
+            type = "http-request"
+            name = "Search Under Load"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/products/search"
+              params {
+                q = "${__randomString(5)}"
+              }
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+            }
+          }
+        ]
+        assertions = [
+          { type = "throughput", minRps = 100 }
+          { type = "error-rate", maxPercent = 1 }
+          { type = "percentile", p99 = 2000 }
+        ]
+      }
+    ]
+  }
+}

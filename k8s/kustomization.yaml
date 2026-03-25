@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: testcraft-runners
+
+resources:
+  - base/namespace.yaml
+  - base/rbac.yaml
+  - base/configmap.yaml
+  - runners/java-deployment.yaml
+  - runners/python-deployment.yaml
+  - runners/csharp-deployment.yaml
+  - runners/all-runners.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: testcraft
+  app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: testcraft/runner-java
+    newTag: latest
+  - name: testcraft/runner-python
+    newTag: latest
+  - name: testcraft/runner-csharp
+    newTag: latest
+  - name: testcraft/runner-javascript
+    newTag: latest
+  - name: testcraft/runner-typescript
+    newTag: latest
+  - name: testcraft/runner-go
+    newTag: latest
+  - name: testcraft/runner-rust
+    newTag: latest
+  - name: testcraft/runner-ruby
+    newTag: latest
+  - name: testcraft/runner-php
+    newTag: latest
+  - name: testcraft/runner-kotlin
+    newTag: latest

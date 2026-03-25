@@ -1,0 +1,219 @@
+
+> @testcraft/root@0.0.0 start:api
+> npm run dev -w @testcraft/api
+
+
+> @testcraft/api@1.0.0 dev
+> tsx watch src/main.ts
+
+[22:22:48.966] [32mINFO[39m (1348377): [36mStarting TestCraft API server...[39m
+    nodeEnv: "development"
+    isProduction: false
+[22:22:48.976] [32mINFO[39m (1348377): [36mMetrics endpoint registered[39m
+    path: "/metrics"
+[22:22:48.995] [32mINFO[39m (1348377): [36mConnected to YugabyteDB[39m
+[22:22:49.019] [32mINFO[39m (1348377): [36mYugabyteDB rate limiter initialized[39m
+[22:22:49.046] [32mINFO[39m (1348377): [36mAuth schema initialized[39m
+[22:22:49.065] [32mINFO[39m (1348377): [36mAudit logging schema initialized[39m
+[22:22:49.067] [32mINFO[39m (1348377): [36mConnected to YugabyteDB[39m
+[22:22:49.070] [32mINFO[39m (1348377): [36mMigration system initialized[39m
+[22:22:49.077] [32mINFO[39m (1348377): [36mAll migrations up to date[39m
+[22:22:49.077] [32mINFO[39m (1348377): [36mDatabase migrations complete[39m
+[22:22:49.080] [32mINFO[39m (1348377): [36mTestCraft API server running at http://0.0.0.0:3000[39m
+    address: "http://0.0.0.0:3000"
+    protocol: "http"
+    port: 3000
+    metricsPath: "/metrics"
+[22:22:49.080] [32mINFO[39m (1348377): [36mAvailable endpoints[39m
+    endpoints: {
+      "api": "http://0.0.0.0:3000/api/v1",
+      "health": "http://0.0.0.0:3000/api/v1/health",
+      "metrics": "http://0.0.0.0:3000/metrics",
+      "docs": "http://0.0.0.0:3000/api/v1/docs"
+    }
+[22:22:49.080] [32mINFO[39m (1348377): [36mServer listening at http://0.0.0.0:3000[39m
+[22:22:52.044] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-1"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 44870
+    }
+[22:22:52.075] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-1"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 30.250455990433693
+[22:29:34.392] [32mINFO[39m (YugabyteDB-Chaos-Bank-Consistency/1348377): [36mTest plan saved[39m
+    id: "82839ad3-34ec-40ed-826d-6c6ee13c4492"
+[22:29:34.392] [32mINFO[39m (1348377): [36mTest plan imported[39m
+[22:29:34.344] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-2"
+    req: {
+      "method": "POST",
+      "url": "/api/v1/plans/import",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 52788
+    }
+[22:29:34.393] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-2"
+    res: {
+      "statusCode": 201
+    }
+    responseTime: 48.16302600502968
+[22:29:34.397] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-3"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 52796
+    }
+[22:29:34.409] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-3"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 12.26180599629879
+[22:29:34.413] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-4"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans/82839ad3-34ec-40ed-826d-6c6ee13c4492",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 52804
+    }
+[22:29:34.417] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-4"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 3.797573000192642
+[22:30:28.477] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-5"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 47470
+    }
+[22:30:28.537] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-5"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 59.701280012726784
+[22:30:32.918] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-6"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 47478
+    }
+[22:30:32.928] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-6"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 9.93411099910736
+[22:30:39.821] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-7"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/plans",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 40344
+    }
+[22:30:39.865] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-7"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 44.362377002835274
+[08:32:53.692] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-8"
+    req: {
+      "method": "GET",
+      "url": "/api/v1/health",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 41514
+    }
+[08:32:53.804] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-8"
+    res: {
+      "statusCode": 200
+    }
+    responseTime: 112.1083949804306
+[09:11:14.936] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-9"
+    req: {
+      "method": "POST",
+      "url": "/api/v1/plans/import",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 57258
+    }
+[09:11:14.963] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-9"
+    res: {
+      "statusCode": 400
+    }
+    responseTime: 27.320543974637985
+[09:11:34.419] [32mINFO[39m (1348377): [36mincoming request[39m
+    reqId: "req-a"
+    req: {
+      "method": "POST",
+      "url": "/api/v1/plans/import",
+      "hostname": "localhost:3000",
+      "remoteAddress": "127.0.0.1",
+      "remotePort": 41256
+    }
+[09:11:34.521] [32mINFO[39m (1348377): [36mrequest completed[39m
+    reqId: "req-a"
+    res: {
+      "statusCode": 400
+    }
+    responseTime: 102.06160801649094
+3:30:45 PM [tsx] change in ./src/modules/hocon/parser.ts Restarting...
+[15:30:45.665] [32mINFO[39m (1348377): [36mReceived shutdown signal, starting graceful shutdown...[39m
+    signal: "SIGTERM"
+[15:30:45.666] [32mINFO[39m (1348377): [36mServer closed, no longer accepting connections[39m
+[15:30:45.666] [32mINFO[39m (1348377): [36mDisconnected from YugabyteDB[39m
+[15:30:45.666] [32mINFO[39m (1348377): [36mDatabase connections closed[39m
+[15:30:45.666] [32mINFO[39m (1348377): [36mGraceful shutdown complete[39m
+c
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+Error [TransformError]: Transform failed with 1 error:
+/home/dmitriis/workspace/github/TestForgeAI/apps/api/src/modules/hocon/parser.ts:77:39: ERROR: Expected identifier but found ")"
+    at failureErrorWithLog (/home/dmitriis/workspace/github/TestForgeAI/node_modules/esbuild/lib/main.js:1467:15)
+    at /home/dmitriis/workspace/github/TestForgeAI/node_modules/esbuild/lib/main.js:736:50
+    at responseCallbacks.<computed> (/home/dmitriis/workspace/github/TestForgeAI/node_modules/esbuild/lib/main.js:603:9)
+    at handleIncomingPacket (/home/dmitriis/workspace/github/TestForgeAI/node_modules/esbuild/lib/main.js:658:12)
+    at Socket.readFromStdout (/home/dmitriis/workspace/github/TestForgeAI/node_modules/esbuild/lib/main.js:581:7)
+    at Socket.emit (node:events:508:20)
+    at addChunk (node:internal/streams/readable:564:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:515:3)
+    at Readable.push (node:internal/streams/readable:395:5)
+    at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+
+Node.js v25.8.1
+npm error Lifecycle script `dev` failed with error:
+npm error code 15
+npm error path /home/dmitriis/workspace/github/TestForgeAI/apps/api
+npm error workspace @testcraft/api@1.0.0
+npm error location /home/dmitriis/workspace/github/TestForgeAI/apps/api
+npm error command failed
+npm error command sh -c tsx watch src/main.ts

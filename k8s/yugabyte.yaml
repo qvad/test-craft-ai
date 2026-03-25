@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: yugabyte
+  namespace: testcraft
+spec:
+  ports:
+    - name: ysql
+      port: 5433
+      targetPort: 5433
+    - name: ycql
+      port: 9042
+      targetPort: 9042
+    - name: ui
+      port: 7000
+      targetPort: 7000
+  selector:
+    app: yugabyte
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yugabyte
+  namespace: testcraft
+spec:
+  serviceName: yugabyte
+  replicas: 1
+  selector:
+    matchLabels:
+      app: yugabyte
+  template:
+    metadata:
+      labels:
+        app: yugabyte
+    spec:
+      containers:
+        - name: yugabyte
+          image: yugabytedb/yugabyte:2.20.1.0-b97
+          command:
+            - bin/yugabyted
+            - start
+            - --daemon=false
+            - --tserver_flags=ysql_enable_packed_row=true
+          ports:
+            - containerPort: 5433
+              name: ysql
+            - containerPort: 9042
+              name: ycql
+            - containerPort: 7000
+              name: ui
+          env:
+            - name: YSQL_USER
+              value: yugabyte
+            - name: YSQL_PASSWORD
+              value: yugabyte
+            - name: YSQL_DB
+              value: testcraft
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: data
+              mountPath: /home/yugabyte/yb_data
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - PGPASSWORD=yugabyte ysqlsh -h $(hostname -i) -p 5433 -U yugabyte -c 'SELECT 1'
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

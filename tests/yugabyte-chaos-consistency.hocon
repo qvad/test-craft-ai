@@ -1,0 +1,188 @@
+testcraft {
+  version = "1.0"
+  plan {
+    name = "YugabyteDB-Chaos-Bank-Consistency"
+    description = "Validated transaction consistency during high-contention bank transfers with simultaneous node failures and network partitions."
+
+    variables {
+      yb_namespace = "testcraft"
+      db_host      = "yugabyte.testcraft.svc.cluster.local"
+      db_port      = 5433
+      db_user      = "yugabyte"
+      db_pass      = "yugabyte"
+      db_name      = "testcraft"
+
+      num_accounts           = 100
+      initial_balance        = 1000
+      total_expected_balance = 100000
+      transfer_amount        = 10
+
+      chaos_interval_ms  = 15000
+      target_tserver_pod = "yb-tserver-1"
+      namespace          = "testcraft"
+    }
+
+    nodes = [
+
+      # ── Phase 1: Start YugabyteDB in Kubernetes ────────────────────────────────
+
+      {
+        name = "Apply-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      },
+
+      # ── Phase 2: Test ──────────────────────────────────────────────────────────
+
+      {
+        name = "Initialize-Database"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = """
+            DROP TABLE IF EXISTS bank_accounts;
+            CREATE TABLE bank_accounts (
+              id INT PRIMARY KEY,
+              balance INT NOT NULL,
+              last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+          """
+        }
+      },
+      {
+        name = "Seed-Accounts"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = """
+            INSERT INTO bank_accounts (id, balance)
+            SELECT i, 1000
+            FROM generate_series(1, 100) AS i;
+          """
+        }
+      },
+      {
+        name = "Execution-Parallel-Group"
+        type = "Parallel-Controller"
+        children = [
+          {
+            name = "Bank-Transfer-Loop"
+            type = "Loop-Controller"
+            config {
+              duration_ms = 120000
+              concurrency = 20
+            }
+            children = [
+              {
+                name = "Randomize-Accounts"
+                type = "Script-Node"
+                config {
+                  language = "javascript"
+                  code = """
+                    const num = 100;
+                    const from = Math.floor(Math.random() * num) + 1;
+                    let to = Math.floor(Math.random() * num) + 1;
+                    while (to === from) { to = Math.floor(Math.random() * num) + 1; }
+                    context.vars.from_account = from;
+                    context.vars.to_account = to;
+                  """
+                }
+              },
+              {
+                name = "Execute-Transfer-Transaction"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user = "${db_user}"
+                  password = "${db_pass}"
+                  sql = """
+                    BEGIN;
+                    UPDATE bank_accounts
+                    SET balance = balance - 10, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ${from_account} AND balance >= 10;
+                    UPDATE bank_accounts
+                    SET balance = balance + 10, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ${to_account};
+                    COMMIT;
+                  """
+                }
+              }
+            ]
+          },
+          {
+            name = "Node-Restart-Nemesis"
+            type = "Loop-Controller"
+            config {
+              duration_ms = 120000
+              delay_ms = 15000
+            }
+            children = [
+              {
+                name = "Restart-TServer-Pod"
+                type = "Kubernetes-Node"
+                config {
+                  action = "restart-pod"
+                  namespace = "yugabyte-db"
+                  podName = "yb-tserver-1"
+                  gracePeriod = 0
+                }
+              },
+              {
+                name = "Wait-for-Recovery"
+                type = "Constant-Timer"
+                config {
+                  delay_ms = 10000
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        name = "Verify-Total-Balance"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = "SELECT SUM(balance) as total_balance FROM bank_accounts;"
+        }
+      }
+    ]
+  }
+}

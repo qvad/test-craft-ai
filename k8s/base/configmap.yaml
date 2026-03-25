@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testcraft-runner-config
+  namespace: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: config
+data:
+  # Default timeout for code execution (in seconds)
+  DEFAULT_TIMEOUT: "60"
+  # Maximum memory per execution
+  MAX_MEMORY: "512m"
+  # Output directory
+  OUTPUT_DIR: "/app/output"
+  # Code directory
+  CODE_DIR: "/app/code"
+  # Log level
+  LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runner-images
+  namespace: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: config
+data:
+  # Runner image tags - update these when building new versions
+  java: "testcraft/runner-java:latest"
+  python: "testcraft/runner-python:latest"
+  csharp: "testcraft/runner-csharp:latest"
+  javascript: "testcraft/runner-javascript:latest"
+  typescript: "testcraft/runner-typescript:latest"
+  go: "testcraft/runner-go:latest"
+  rust: "testcraft/runner-rust:latest"
+  ruby: "testcraft/runner-ruby:latest"
+  php: "testcraft/runner-php:latest"
+  kotlin: "testcraft/runner-kotlin:latest"

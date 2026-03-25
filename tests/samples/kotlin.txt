@@ -1,0 +1,14 @@
+fun main() {
+    println("Hello from Kotlin!")
+    println("Kotlin Version: ${KotlinVersion.CURRENT}")
+
+    // Test some basic operations
+    val numbers = (1..10).toList()
+    val sum = numbers.sum()
+    println("Sum of 1-10: $sum")
+
+    // Test data class
+    data class Result(val message: String, val sum: Int)
+    val result = Result("Hello", sum)
+    println("Result: $result")
+}

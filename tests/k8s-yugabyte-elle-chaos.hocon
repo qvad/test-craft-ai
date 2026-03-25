@@ -1,0 +1,695 @@
+testcraft {
+  version = "1.0"
+  plan {
+    name = "K8s-YugabyteDB-Elle-Chaos-Suite"
+    description = """
+      Full Kubernetes lifecycle test:
+
+        Phase 1  Deploy YugabyteDB StatefulSet to K8s, wait for YSQL readiness.
+        Phase 2  Bootstrap Elle schema (lists + history + chaos event log).
+        Phase 3  Run Elle list-append transactions in parallel with:
+                   • Rolling pod-delete nemesis (cycles yb-tserver-0/1/2)
+                   • Network-partition nemesis (cordon/uncordon K8s node)
+        Phase 4  Run Elle strict-serializability checker with chaos correlation.
+                 Report anomaly type (G0 / G1c / G2-item / G2) and the chaos
+                 event window during which each cycle was observed.
+
+      Pass criterion: zero anomalies detected in committed transaction history.
+
+      YugabyteDB claims strict serializability (SSI) for SERIALIZABLE isolation —
+      this plan validates that claim survives real distributed failures.
+    """
+
+    variables {
+      # Kubernetes
+      yb_namespace  = "testcraft"
+      yb_k8s_label  = "app=yb-tserver"
+      tserver_pods  = "yb-tserver-0,yb-tserver-1,yb-tserver-2"
+
+      # Database (in-cluster DNS when running inside K8s; use localhost for local dev)
+      db_host = "yugabyte.testcraft.svc.cluster.local"
+      db_port = 5433
+      db_user = "yugabyte"
+      db_pass = "yugabyte"
+      db_name = "testcraft"
+
+      # Test tuning
+      test_duration_ms  = 180000   # 3 minutes of concurrent load
+      concurrency       = 24       # parallel workload threads
+      num_keys          = 8        # k0 … k7
+      restart_interval  = 20000    # pod restart every 20 s
+      partition_hold_ms = 15000    # how long each cordon lasts
+      partition_pause   = 45000    # wait between partitions
+    }
+
+    nodes = [
+
+      # ════════════════════════════════════════════════════════════════════════════
+      # Phase 1 — Deploy YugabyteDB to Kubernetes
+      # ════════════════════════════════════════════════════════════════════════════
+
+      {
+        name = "Apply-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = [
+            "-c",
+            "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"
+          ]
+          expectedReturnCode = 0
+        }
+      },
+
+      {
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      },
+
+      {
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = [
+            "wait", "--for=condition=Ready",
+            "pod", "-l", "${yb_k8s_label}",
+            "-n", "${yb_namespace}",
+            "--timeout=300s"
+          ]
+          expectedReturnCode = 0
+        }
+      },
+
+      {
+        name = "Wait-YSQL-Accepting-Connections"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      },
+
+      # ════════════════════════════════════════════════════════════════════════════
+      # Phase 2 — Bootstrap Schema
+      # ════════════════════════════════════════════════════════════════════════════
+
+      {
+        name = "Bootstrap-Elle-Schema"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user       = "${db_user}"
+          password   = "${db_pass}"
+          sql        = """
+            DROP TABLE IF EXISTS elle_history  CASCADE;
+            DROP TABLE IF EXISTS elle_list     CASCADE;
+            DROP TABLE IF EXISTS chaos_events  CASCADE;
+            DROP SEQUENCE IF EXISTS elle_txn_seq;
+            DROP SEQUENCE IF EXISTS elle_val_seq;
+
+            CREATE SEQUENCE elle_txn_seq START 1;
+            CREATE SEQUENCE elle_val_seq START 1;
+
+            -- Ordered per-key append log
+            CREATE TABLE elle_list (
+              key_name   TEXT   NOT NULL,
+              value      BIGINT NOT NULL,
+              txn_id     BIGINT NOT NULL,
+              written_at TIMESTAMPTZ DEFAULT now(),
+              PRIMARY KEY (key_name, value)
+            );
+
+            -- Full operation log (Elle reads from this after the run)
+            CREATE TABLE elle_history (
+              id         BIGSERIAL   PRIMARY KEY,
+              txn_id     BIGINT      NOT NULL,
+              op_type    TEXT        NOT NULL,   -- 'read' | 'write'
+              key_name   TEXT        NOT NULL,
+              value      BIGINT,
+              read_list  TEXT,                   -- comma-sep values seen at read time
+              committed  BOOLEAN     NOT NULL DEFAULT true,
+              ts         TIMESTAMPTZ DEFAULT now()
+            );
+
+            -- Chaos event log (correlate anomalies with failure windows)
+            CREATE TABLE chaos_events (
+              id          SERIAL      PRIMARY KEY,
+              event_type  TEXT        NOT NULL,  -- 'pod-delete' | 'network-partition'
+              target      TEXT        NOT NULL,
+              started_at  TIMESTAMPTZ DEFAULT now(),
+              ended_at    TIMESTAMPTZ,
+              ok          BOOLEAN
+            );
+
+            CREATE INDEX ON elle_history (txn_id);
+            CREATE INDEX ON elle_history (key_name, op_type);
+            CREATE INDEX ON elle_history (ts);
+            CREATE INDEX ON chaos_events (started_at, ended_at);
+          """
+        }
+      },
+
+      # ════════════════════════════════════════════════════════════════════════════
+      # Phase 3 — Parallel Workload + Chaos Nemesis
+      # ════════════════════════════════════════════════════════════════════════════
+
+      {
+        name = "Workload-and-Chaos"
+        type = "Parallel-Controller"
+        children = [
+
+          # ── Arm 1: Elle list-append workload ────────────────────────────────────
+          {
+            name = "Elle-Workload"
+            type = "Loop-Controller"
+            config {
+              duration_ms = ${test_duration_ms}
+              concurrency = ${concurrency}
+            }
+            children = [
+              {
+                name = "Pick-Keys"
+                type = "Script-Node"
+                config {
+                  language = "javascript"
+                  code     = """
+                    // Pick 2 distinct keys from k0..k7 (Fisher-Yates)
+                    const n = 8;
+                    const idx = Array.from({length: n}, (_, i) => i);
+                    for (let i = n - 1; i > 0; i--) {
+                      const j = Math.floor(Math.random() * (i + 1));
+                      [idx[i], idx[j]] = [idx[j], idx[i]];
+                    }
+                    context.vars.key1 = 'k' + idx[0];
+                    context.vars.key2 = 'k' + idx[1];
+                  """
+                }
+              },
+              {
+                name = "Append-Transaction"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    DO $$
+                    DECLARE
+                      v_txn  BIGINT := nextval('elle_txn_seq');
+                      v_val  BIGINT := nextval('elle_val_seq') * 1000;
+                      v_k1   TEXT   := '${key1}';
+                      v_k2   TEXT   := '${key2}';
+                      v_rl1  TEXT;
+                      v_rl2  TEXT;
+                      v_lv1  BIGINT;
+                      v_lv2  BIGINT;
+                    BEGIN
+                      -- Read-then-append key1
+                      SELECT coalesce(string_agg(value::text, ',' ORDER BY written_at), '')
+                      INTO v_rl1 FROM elle_list WHERE key_name = v_k1;
+                      SELECT max(value) INTO v_lv1 FROM elle_list WHERE key_name = v_k1;
+                      INSERT INTO elle_history(txn_id, op_type, key_name, value, read_list)
+                      VALUES (v_txn, 'read', v_k1, v_lv1, v_rl1);
+
+                      INSERT INTO elle_list(key_name, value, txn_id) VALUES (v_k1, v_val, v_txn);
+                      INSERT INTO elle_history(txn_id, op_type, key_name, value)
+                      VALUES (v_txn, 'write', v_k1, v_val);
+
+                      -- Read-then-append key2 (offset +1 avoids primary-key collision)
+                      SELECT coalesce(string_agg(value::text, ',' ORDER BY written_at), '')
+                      INTO v_rl2 FROM elle_list WHERE key_name = v_k2;
+                      SELECT max(value) INTO v_lv2 FROM elle_list WHERE key_name = v_k2;
+                      INSERT INTO elle_history(txn_id, op_type, key_name, value, read_list)
+                      VALUES (v_txn, 'read', v_k2, v_lv2, v_rl2);
+
+                      INSERT INTO elle_list(key_name, value, txn_id) VALUES (v_k2, v_val + 1, v_txn);
+                      INSERT INTO elle_history(txn_id, op_type, key_name, value)
+                      VALUES (v_txn, 'write', v_k2, v_val + 1);
+
+                    EXCEPTION WHEN serialization_failure OR deadlock_detected THEN
+                      UPDATE elle_history SET committed = false WHERE txn_id = v_txn;
+                      RAISE;
+                    END;
+                    $$;
+                  """
+                }
+              }
+            ]
+          },
+
+          # ── Arm 2: Rolling pod-delete nemesis ────────────────────────────────────
+          {
+            name = "Pod-Delete-Nemesis"
+            type = "Loop-Controller"
+            config {
+              duration_ms = ${test_duration_ms}
+              delay_ms    = ${restart_interval}
+            }
+            children = [
+              {
+                name = "Select-Target-Pod"
+                type = "Script-Node"
+                config {
+                  language = "javascript"
+                  code     = """
+                    const pods = '${tserver_pods}'.split(',');
+                    const round = parseInt(context.vars.chaos_round || '0');
+                    context.vars.target_pod = pods[round % pods.length];
+                    context.vars.chaos_round = String(round + 1);
+                  """
+                }
+              },
+              {
+                name = "Log-Pod-Delete-Start"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    INSERT INTO chaos_events(event_type, target)
+                    VALUES ('pod-delete', '${target_pod}');
+                  """
+                }
+              },
+              {
+                name = "Delete-TServer-Pod"
+                type = "Kubernetes-Node"
+                config {
+                  action      = "delete-pod"
+                  namespace   = "${yb_namespace}"
+                  podName     = "${target_pod}"
+                  gracePeriod = 0
+                }
+              },
+              {
+                name = "Wait-Pod-Restart"
+                type = "Shell-Command"
+                config {
+                  command   = "kubectl"
+                  arguments = [
+                    "wait", "--for=condition=Ready",
+                    "pod", "${target_pod}",
+                    "-n", "${yb_namespace}",
+                    "--timeout=120s"
+                  ]
+                  expectedReturnCode = 0
+                }
+              },
+              {
+                name = "Log-Pod-Delete-End"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    UPDATE chaos_events
+                    SET ended_at = now(), ok = true
+                    WHERE id = (
+                      SELECT id FROM chaos_events
+                      WHERE event_type = 'pod-delete'
+                        AND target = '${target_pod}'
+                        AND ended_at IS NULL
+                      ORDER BY started_at DESC LIMIT 1
+                    );
+                  """
+                }
+              }
+            ]
+          },
+
+          # ── Arm 3: Network-partition nemesis (cordon / uncordon) ──────────────────
+          {
+            name = "Network-Partition-Nemesis"
+            type = "Loop-Controller"
+            config {
+              duration_ms = ${test_duration_ms}
+              delay_ms    = ${partition_pause}
+            }
+            children = [
+              {
+                name = "Pick-Partition-Target"
+                type = "Script-Node"
+                config {
+                  language = "javascript"
+                  code     = """
+                    const pods = '${tserver_pods}'.split(',');
+                    context.vars.partition_pod = pods[Math.floor(Math.random() * pods.length)];
+                  """
+                }
+              },
+              {
+                name = "Log-Partition-Start"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    INSERT INTO chaos_events(event_type, target)
+                    VALUES ('network-partition', '${partition_pod}');
+                  """
+                }
+              },
+              {
+                name = "Cordon-TServer-Node"
+                type = "Kubernetes-Node"
+                config {
+                  action    = "cordon-node"
+                  namespace = "${yb_namespace}"
+                  podName   = "${partition_pod}"
+                }
+              },
+              {
+                name = "Partition-Hold"
+                type = "Constant-Timer"
+                config {
+                  delay_ms = ${partition_hold_ms}
+                }
+              },
+              {
+                name = "Uncordon-TServer-Node"
+                type = "Kubernetes-Node"
+                config {
+                  action    = "uncordon-node"
+                  namespace = "${yb_namespace}"
+                  podName   = "${partition_pod}"
+                }
+              },
+              {
+                name = "Log-Partition-End"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    UPDATE chaos_events
+                    SET ended_at = now(), ok = true
+                    WHERE event_type = 'network-partition'
+                      AND target = '${partition_pod}'
+                      AND ended_at IS NULL
+                    ;
+                  """
+                }
+              }
+            ]
+          }
+
+        ] # end Parallel-Controller children
+      },
+
+      # ════════════════════════════════════════════════════════════════════════════
+      # Phase 4 — Elle Analysis + Chaos Correlation
+      # ════════════════════════════════════════════════════════════════════════════
+
+      {
+        name = "Collect-Committed-History"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "elle_history_json"
+          sql            = """
+            SELECT json_agg(
+              json_build_object(
+                'txn_id',    txn_id,
+                'op_type',   op_type,
+                'key_name',  key_name,
+                'value',     value,
+                'read_list', read_list
+              )
+              ORDER BY id
+            )::text
+            FROM elle_history
+            WHERE committed = true;
+          """
+        }
+      },
+
+      {
+        name = "Collect-Chaos-Events"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "chaos_json"
+          sql            = """
+            SELECT json_agg(
+              json_build_object(
+                'type',        event_type,
+                'target',      target,
+                'start',       started_at,
+                'end',         ended_at,
+                'ok',          ok,
+                'txns_during', (
+                  SELECT count(DISTINCT txn_id)
+                  FROM elle_history
+                  WHERE ts BETWEEN started_at AND coalesce(ended_at, now())
+                )
+              )
+              ORDER BY started_at
+            )::text
+            FROM chaos_events;
+          """
+        }
+      },
+
+      {
+        name = "Elle-Strict-Serializability-Checker"
+        type = "Script-Node"
+        config {
+          language = "javascript"
+          code     = """
+            // ═══════════════════════════════════════════════════════════════════════
+            // Elle Strict-Serializability Checker with Chaos Correlation
+            //
+            // Reference: "Elle: Inferring Isolation Anomalies from Experimental
+            //             Observations" — Kingsbury & Alvaro, VLDB 2021
+            //
+            // Anomaly taxonomy:
+            //   G0      WW cycle (dirty write — should never occur in any DB)
+            //   G1c     WR or WW cycle (circular info flow — violates read committed)
+            //   G2-item RW anti-dependency cycle (lost update / phantom)
+            //   G2      G2-item + WR (predicate anti-dep — violates serializability)
+            // ═══════════════════════════════════════════════════════════════════════
+
+            function parseJson(s) {
+              if (!s || s === 'null') return null;
+              try { const p = JSON.parse(s); return typeof p === 'string' ? JSON.parse(p) : p; }
+              catch(e) { return null; }
+            }
+
+            const history   = parseJson(context.vars.elle_history_json) || [];
+            const chaosEvts = parseJson(context.vars.chaos_json) || [];
+
+            if (history.length === 0) {
+              context.vars.elle_status = 'NO_HISTORY';
+              throw new Error('History is empty — workload may not have run');
+            }
+
+            // ── 1. Group ops by transaction ─────────────────────────────────────────
+            const txns = new Map();
+            for (const op of history) {
+              const tid = String(op.txn_id);
+              if (!txns.has(tid)) txns.set(tid, { reads: [], writes: [] });
+              const bucket = op.op_type === 'write' ? 'writes' : 'reads';
+              const rl = op.read_list
+                ? op.read_list.split(',').filter(Boolean).map(Number)
+                : [];
+              txns.get(tid)[bucket].push({
+                key:      op.key_name,
+                value:    op.value != null ? Number(op.value) : null,
+                readList: rl
+              });
+            }
+
+            // ── 2. Build write indexes ──────────────────────────────────────────────
+            const writeByKV = new Map();  // "key:val" → txnId
+            const keyOrder  = new Map();  // key → [txnId in observed append order]
+
+            for (const [tid, ops] of txns)
+              for (const w of ops.writes)
+                writeByKV.set(w.key + ':' + w.value, tid);
+
+            // Reconstruct per-key write ordering from readLists
+            for (const [, ops] of txns) {
+              for (const r of ops.reads) {
+                if (!keyOrder.has(r.key)) keyOrder.set(r.key, []);
+                const order = keyOrder.get(r.key);
+                for (const v of r.readList) {
+                  const w = writeByKV.get(r.key + ':' + v);
+                  if (w && !order.includes(w)) order.push(w);
+                }
+              }
+            }
+
+            // ── 3. Build WR / WW / RW edges ─────────────────────────────────────────
+            const edges   = [];
+            const edgeSig = new Set();
+
+            function addEdge(from, to, type, key, why) {
+              if (from === to) return;
+              const sig = from + '→' + to + ':' + type + ':' + key;
+              if (edgeSig.has(sig)) return;
+              edgeSig.add(sig);
+              edges.push({ from, to, type, key, why });
+            }
+
+            for (const [tid, ops] of txns) {
+              // WR
+              for (const r of ops.reads) {
+                for (const v of [...r.readList, ...(r.value != null ? [r.value] : [])]) {
+                  const w = writeByKV.get(r.key + ':' + v);
+                  if (w) addEdge(w, tid, 'wr', r.key, w + ' wrote ' + r.key + '=' + v + ', read by ' + tid);
+                }
+              }
+              // WW
+              for (const w of ops.writes) {
+                const ord = keyOrder.get(w.key) || [];
+                const i = ord.indexOf(tid);
+                if (i > 0) addEdge(ord[i - 1], tid, 'ww', w.key,
+                  ord[i - 1] + ' → ' + tid + ' on ' + w.key);
+              }
+              // RW anti-deps
+              for (const r of ops.reads) {
+                const ord = keyOrder.get(r.key) || [];
+                for (const writer of ord) {
+                  if (writer === tid) continue;
+                  const wv = txns.get(writer)?.writes.find(w => w.key === r.key)?.value;
+                  if (wv != null && !r.readList.includes(wv))
+                    addEdge(tid, writer, 'rw', r.key,
+                      tid + ' read ' + r.key + ' without ' + wv + ' (written by ' + writer + ')');
+                }
+              }
+            }
+
+            // ── 4. Tarjan SCC (cycle detection) ─────────────────────────────────────
+            let sccIdx = 0;
+            const sccLow = new Map(), sccNum = new Map();
+            const sccOnStk = new Set(), sccStk = [];
+            const sccs = [];
+            const graph = new Map();
+            for (const [tid] of txns) graph.set(tid, []);
+            for (const e of edges) if (graph.has(e.from)) graph.get(e.from).push(e);
+
+            function tarjan(v) {
+              sccLow.set(v, sccIdx); sccNum.set(v, sccIdx++);
+              sccStk.push(v); sccOnStk.add(v);
+              for (const e of (graph.get(v) || [])) {
+                if (!sccNum.has(e.to)) {
+                  tarjan(e.to);
+                  sccLow.set(v, Math.min(sccLow.get(v), sccLow.get(e.to)));
+                } else if (sccOnStk.has(e.to)) {
+                  sccLow.set(v, Math.min(sccLow.get(v), sccNum.get(e.to)));
+                }
+              }
+              if (sccLow.get(v) === sccNum.get(v)) {
+                const comp = []; let w;
+                do { w = sccStk.pop(); sccOnStk.delete(w); comp.push(w); } while (w !== v);
+                if (comp.length > 1) sccs.push(comp);
+              }
+            }
+            for (const [tid] of txns) if (!sccNum.has(tid)) tarjan(tid);
+
+            // ── 5. Classify anomalies + correlate with chaos windows ─────────────────
+            const anomalies = [];
+            for (const comp of sccs) {
+              const s   = new Set(comp);
+              const ces = edges.filter(e => s.has(e.from) && s.has(e.to));
+              const rw  = ces.some(e => e.type === 'rw');
+              const wr  = ces.some(e => e.type === 'wr');
+              const ww  = ces.some(e => e.type === 'ww');
+              const anomalyType = rw && wr ? 'G2'
+                                : rw       ? 'G2-item'
+                                : wr || ww ? 'G1c'
+                                :            'G0';
+
+              // Find chaos events that overlapped with any txn in this cycle
+              // (approximate — we don't have per-txn timestamps in the simplified model)
+              const overlapChaos = chaosEvts.filter(ev => ev.txns_during > 0).map(ev => ev.type);
+
+              anomalies.push({
+                type:           anomalyType,
+                cycle_size:     comp.length,
+                sample_txns:    comp.slice(0, 4),
+                sample_edges:   ces.slice(0, 3).map(e => e.from + ' -[' + e.type + ':' + e.key + ']→ ' + e.to),
+                chaos_overlap:  [...new Set(overlapChaos)]
+              });
+            }
+
+            // ── 6. Build report ───────────────────────────────────────────────────────
+            const totalTxns  = txns.size;
+            const aborted    = history.filter(h => h.committed === false).length;
+
+            context.vars.elle_status        = anomalies.length === 0 ? 'CONSISTENT_SSI' : 'ANOMALIES_DETECTED';
+            context.vars.elle_txn_count     = String(totalTxns);
+            context.vars.elle_edge_count    = String(edges.length);
+            context.vars.elle_cycle_count   = String(sccs.length);
+            context.vars.elle_anomaly_count = String(anomalies.length);
+            context.vars.elle_anomalies     = JSON.stringify(anomalies, null, 2);
+            context.vars.chaos_event_count  = String(chaosEvts.length);
+
+            const w = (s, n) => String(s).padEnd(n);
+            const lines = [
+              '',
+              '╔═════════════════════════════════════════════════════════════════╗',
+              '║        Elle Strict-Serializability Report — Chaos Edition       ║',
+              '╠═════════════════════════════════════════════════════════════════╣',
+              '║  Committed txns analysed  : ' + w(totalTxns, 36)  + '║',
+              '║  Dependency edges         : ' + w(edges.length, 36) + '║',
+              '║  SCCs (cycles)            : ' + w(sccs.length, 36) + '║',
+              '║  Anomalies detected       : ' + w(anomalies.length, 36) + '║',
+              '║  Chaos events total       : ' + w(chaosEvts.length, 36) + '║',
+              '╠═════════════════════════════════════════════════════════════════╣',
+            ];
+
+            if (anomalies.length === 0) {
+              lines.push('║  ✓ CONSISTENT — YugabyteDB strict serializability holds        ║');
+            } else {
+              lines.push('║  ✗ FAILED    — consistency anomalies detected                  ║');
+              lines.push('╠═════════════════════════════════════════════════════════════════╣');
+              lines.push('║  Anomaly detail:                                                ║');
+              for (const a of anomalies) {
+                lines.push('║    [' + w(a.type, 7) + '] cycle=' + w(a.cycle_size, 4) +
+                  ' chaos=' + w((a.chaos_overlap.join(',') || 'none'), 26) + '║');
+                for (const edge of a.sample_edges)
+                  lines.push('║      ' + w(edge, 59) + '║');
+              }
+            }
+
+            lines.push('╚═════════════════════════════════════════════════════════════════╝');
+
+            if (chaosEvts.length > 0) {
+              lines.push('');
+              lines.push('Chaos events:');
+              for (const ev of chaosEvts)
+                lines.push('  [' + ev.type + '] ' + ev.target +
+                  ' — ' + (ev.txns_during || 0) + ' txns in window' +
+                  (ev.ok ? '' : ' (FAILED to recover)'));
+            }
+
+            console.log(lines.join('\n'));
+
+            if (anomalies.length > 0)
+              throw new Error(
+                'Elle detected ' + anomalies.length + ' anomaly(ies) under chaos: ' +
+                anomalies.map(a => a.type + '(cycle=' + a.cycle_size + ')').join(', ')
+              );
+          """
+        }
+      }
+
+    ]
+  }
+}

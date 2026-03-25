@@ -1,0 +1,260 @@
+/**
+ * TestCraft Jenkins Pipeline Template
+ *
+ * This pipeline executes HOCON test plans using TestCraft CLI
+ * Copy this file to your project and customize as needed
+ */
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+spec:
+  containers:
+  - name: testcraft
+    image: testcraft/cli:latest
+    command:
+    - cat
+    tty: true
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+  - name: node
+    image: node:20-alpine
+    command:
+    - cat
+    tty: true
+'''
+        }
+    }
+
+    environment {
+        TESTCRAFT_API_URL = credentials('testcraft-api-url')
+        TESTCRAFT_API_KEY = credentials('testcraft-api-key')
+        TEST_PLAN_PATH = "${params.TEST_PLAN_PATH ?: 'tests/test-plan.hocon'}"
+        TEST_ENVIRONMENT = "${params.TEST_ENVIRONMENT ?: 'staging'}"
+        REPORT_DIR = 'test-reports'
+    }
+
+    parameters {
+        string(
+            name: 'TEST_PLAN_PATH',
+            defaultValue: 'tests/test-plan.hocon',
+            description: 'Path to the HOCON test plan file'
+        )
+        choice(
+            name: 'TEST_ENVIRONMENT',
+            choices: ['dev', 'staging', 'production'],
+            description: 'Target environment for test execution'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Validate test plan without executing'
+        )
+        booleanParam(
+            name: 'PARALLEL_EXECUTION',
+            defaultValue: true,
+            description: 'Run tests in parallel when possible'
+        )
+        string(
+            name: 'CUSTOM_VARIABLES',
+            defaultValue: '',
+            description: 'Custom variables (format: KEY1=value1,KEY2=value2)'
+        )
+    }
+
+    options {
+        timeout(time: 2, unit: 'HOURS')
+        timestamps()
+        ansiColor('xterm')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_BRANCH_NAME = sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+
+        stage('Validate Test Plan') {
+            steps {
+                container('testcraft') {
+                    script {
+                        def strictFlag = params.TEST_ENVIRONMENT == 'production' ? '--strict' : ''
+                        sh """
+                            testcraft validate ${TEST_PLAN_PATH} ${strictFlag}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Dry Run') {
+            when {
+                expression { params.DRY_RUN == true }
+            }
+            steps {
+                container('testcraft') {
+                    sh """
+                        testcraft run ${TEST_PLAN_PATH} \
+                            --api-url ${TESTCRAFT_API_URL} \
+                            --environment ${TEST_ENVIRONMENT} \
+                            --dry-run \
+                            --verbose
+                    """
+                }
+            }
+        }
+
+        stage('Execute Tests') {
+            when {
+                expression { params.DRY_RUN == false }
+            }
+            steps {
+                container('testcraft') {
+                    script {
+                        def parallelFlag = params.PARALLEL_EXECUTION ? '--parallel' : ''
+                        def variables = parseVariables(params.CUSTOM_VARIABLES)
+                        def varFlags = variables.collect { "--var ${it.key}=${it.value}" }.join(' ')
+
+                        sh """
+                            testcraft run ${TEST_PLAN_PATH} \
+                                --api-url ${TESTCRAFT_API_URL} \
+                                --environment ${TEST_ENVIRONMENT} \
+                                --output ${REPORT_DIR} \
+                                --format json --format html --format junit \
+                                ${parallelFlag} \
+                                ${varFlags} \
+                                --ci \
+                                --verbose
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORT_DIR}/**/*", allowEmptyArchive: true
+
+                    junit testResults: "${REPORT_DIR}/test-report.xml", allowEmptyResults: true
+
+                    publishHTML(target: [
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: REPORT_DIR,
+                        reportFiles: 'test-report.html',
+                        reportName: 'TestCraft Report'
+                    ])
+                }
+            }
+        }
+
+        stage('Upload Results') {
+            when {
+                expression { params.DRY_RUN == false }
+            }
+            steps {
+                container('testcraft') {
+                    script {
+                        // Upload test plan with results for historical tracking
+                        sh """
+                            testcraft import ${TEST_PLAN_PATH} \
+                                --api-url ${TESTCRAFT_API_URL} \
+                                --name "${env.JOB_NAME}-${env.BUILD_NUMBER}"
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            script {
+                if (params.DRY_RUN == false) {
+                    slackSend(
+                        color: 'good',
+                        message: """
+                            :white_check_mark: TestCraft Tests Passed
+                            Job: ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                            Branch: ${env.GIT_BRANCH_NAME}
+                            Commit: ${env.GIT_COMMIT_SHORT}
+                            Environment: ${params.TEST_ENVIRONMENT}
+                            Report: ${env.BUILD_URL}TestCraft_Report/
+                        """.stripIndent()
+                    )
+                }
+            }
+        }
+        failure {
+            script {
+                slackSend(
+                    color: 'danger',
+                    message: """
+                        :x: TestCraft Tests Failed
+                        Job: ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                        Branch: ${env.GIT_BRANCH_NAME}
+                        Commit: ${env.GIT_COMMIT_SHORT}
+                        Environment: ${params.TEST_ENVIRONMENT}
+                        Console: ${env.BUILD_URL}console
+                    """.stripIndent()
+                )
+            }
+        }
+        unstable {
+            script {
+                slackSend(
+                    color: 'warning',
+                    message: """
+                        :warning: TestCraft Tests Unstable
+                        Job: ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                        Branch: ${env.GIT_BRANCH_NAME}
+                        Some tests may have failed or been skipped.
+                        Report: ${env.BUILD_URL}TestCraft_Report/
+                    """.stripIndent()
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Parse comma-separated key=value pairs into a map
+ */
+def parseVariables(String vars) {
+    def result = [:]
+    if (vars?.trim()) {
+        vars.split(',').each { pair ->
+            def parts = pair.split('=', 2)
+            if (parts.length == 2) {
+                result[parts[0].trim()] = parts[1].trim()
+            }
+        }
+    }
+    return result
+}

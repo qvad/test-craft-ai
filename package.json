@@ -1,0 +1,52 @@
+{
+  "name": "@testcraft/root",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "npm run start -w @testcraft/web",
+    "start:web": "npm run start -w @testcraft/web",
+    "start:api": "npm run dev -w @testcraft/api",
+    "start:all": "python3 start.py --no-docker",
+    "build": "turbo run build",
+    "build:web": "turbo run build --filter=@testcraft/web",
+    "build:api": "turbo run build --filter=@testcraft/api",
+    "build:types": "turbo run build --filter=@testcraft/shared-types",
+    "test": "turbo run test",
+    "test:web": "turbo run test --filter=@testcraft/web",
+    "test:api": "turbo run test --filter=@testcraft/api",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "dev": "bash scripts/restart-dev.sh",
+    "restart": "bash scripts/restart-dev.sh",
+    "test:nodes": "npx tsx tests/framework/index.ts",
+    "test:smoke": "npx tsx tests/framework/index.ts smoke",
+    "test:samplers": "npx tsx tests/framework/index.ts samplers",
+    "test:controllers": "npx tsx tests/framework/index.ts controllers",
+    "test:assertions": "npx tsx tests/framework/index.ts assertions",
+    "test:full": "npx tsx tests/framework/index.ts full",
+    "test:http": "npx tsx tests/framework/index.ts http",
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules .turbo"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "overrides": [
+      {
+        "files": "*.html",
+        "options": {
+          "parser": "angular"
+        }
+      }
+    ]
+  },
+  "packageManager": "npm@10.9.2",
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "turbo": "^2.4.0",
+    "typescript": "~5.9.2"
+  }
+}

@@ -1,0 +1,1 @@
+{"error":"Failed to parse HOCON","details":"JSON parse error: Expected ',' or '}' after property value in JSON at position 1891 (line 58 column 40). JSON: {\"testcraft\": {\n  \"version\": \"1.0\",\n\"plan\": {\n    \"name\": \"YugabyteDB-Chaos-Bank-Consistency\",\n\"desc...; Failed to parse HOCON"}

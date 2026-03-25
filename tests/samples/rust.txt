@@ -1,0 +1,11 @@
+fn main() {
+    println!("Hello from Rust!");
+
+    // Test some basic operations
+    let sum: i32 = (1..=10).sum();
+    println!("Sum of 1-10: {}", sum);
+
+    // Test vector operations
+    let numbers: Vec<i32> = (1..=10).collect();
+    println!("Numbers: {:?}", numbers);
+}

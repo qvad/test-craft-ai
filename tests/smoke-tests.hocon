@@ -1,0 +1,175 @@
+/**
+ * Smoke Tests
+ *
+ * Quick sanity checks to verify basic functionality
+ * Run time: ~2-5 minutes
+ */
+
+testcraft {
+  plan {
+    name = "Smoke Tests"
+    description = "Quick sanity checks for core functionality"
+    version = "1.0"
+    tags = ["smoke", "ci", "quick"]
+
+    config {
+      timeout = 300000  # 5 minutes
+      stopOnError = false
+      parallelExecution = true
+    }
+
+    variables {
+      yb_namespace = ${?YB_NAMESPACE} "testcraft"
+      baseUrl      = ${?BASE_URL} "https://api.example.com"
+      apiKey       = ${?API_KEY}
+      db_host      = ${?DB_HOST} "yugabyte.testcraft.svc.cluster.local"
+      db_port      = ${?DB_PORT} 5433
+      db_name      = ${?DB_NAME} "testcraft"
+      db_user      = ${?DB_USER} "yugabyte"
+      db_pass      = ${?DB_PASS} "yugabyte"
+    }
+
+    nodes = [
+
+      # ── K8s: Start YugabyteDB ────────────────────────────────────────────────────
+
+      {
+        id   = "apply-namespace"
+        name = "Apply-YB-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "deploy-yugabyte"
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        dependsOn = ["apply-namespace"]
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-pods-ready"
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        dependsOn = ["deploy-yugabyte"]
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-ysql-ready"
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        dependsOn = ["wait-pods-ready"]
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      }
+
+      # ── Smoke Tests ──────────────────────────────────────────────────────────────
+
+      {
+        id = "health-check"
+        type = "http-request"
+        name = "API Health Check"
+        config {
+          method = "GET"
+          url = "${variables.baseUrl}/health"
+          timeout = 10000
+          assertions = [
+            { type = "status", expected = 200 }
+            { type = "json-path", path = "$.status", expected = "healthy" }
+            { type = "response-time", maxMs = 1000 }
+          ]
+        }
+      }
+
+      {
+        id = "auth-endpoint"
+        type = "http-request"
+        name = "Authentication Endpoint"
+        dependsOn = ["health-check"]
+        config {
+          method = "POST"
+          url = "${variables.baseUrl}/auth/token"
+          headers {
+            Content-Type = "application/json"
+          }
+          body = """
+            {
+              "grant_type": "client_credentials",
+              "client_id": "test-client",
+              "client_secret": "${variables.apiKey}"
+            }
+          """
+          extractors = [
+            { name = "access_token", type = "json-path", path = "$.access_token" }
+          ]
+          assertions = [
+            { type = "status", expected = 200 }
+            { type = "json-path", path = "$.token_type", expected = "Bearer" }
+          ]
+        }
+      }
+
+      {
+        id = "api-version"
+        type = "http-request"
+        name = "API Version Check"
+        dependsOn = ["health-check"]
+        config {
+          method = "GET"
+          url = "${variables.baseUrl}/version"
+          assertions = [
+            { type = "status", expected = 200 }
+            { type = "json-path", path = "$.version", pattern = "^\\d+\\.\\d+\\.\\d+$" }
+          ]
+        }
+      }
+
+      {
+        id = "database-connectivity"
+        type = "jdbc-request"
+        name = "Database Connection Test"
+        dependsOn = ["wait-ysql-ready"]
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user  = "${db_user}"
+          password = "${db_pass}"
+          sql   = "SELECT 1 AS health_check"
+          assertions = [
+            { type = "result-count", expected = 1 }
+          ]
+        }
+      }
+
+      {
+        id = "redis-connectivity"
+        type = "redis-request"
+        name = "Redis Connection Test"
+        config {
+          host = ${?REDIS_HOST} "localhost"
+          port = ${?REDIS_PORT} 6379
+          command = "PING"
+          assertions = [
+            { type = "response", expected = "PONG" }
+          ]
+        }
+      }
+    ]
+  }
+}

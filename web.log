@@ -1,0 +1,83 @@
+
+> @testcraft/root@0.0.0 start:web
+> npm run start -w @testcraft/web
+
+
+> @testcraft/web@0.0.0 start
+> ng serve
+
+Node.js version v25.8.1 detected.
+Odd numbered Node.js versions will not enter LTS status and should not be used for production. For more information, please see https://nodejs.org/en/about/previous-releases/.
+❯ Building...
+✔ Building...
+Initial chunk files | Names               |  Raw size
+styles.css          | styles              |  39.81 kB | 
+chunk-I2KQXNS7.js   | -                   |  12.12 kB | 
+main.js             | main                |   3.85 kB | 
+chunk-JB4JLGJ6.js   | -                   | 331 bytes | 
+
+                    | Initial total       |  56.12 kB
+
+Lazy chunk files    | Names               |  Raw size
+chunk-X4SXC6JN.js   | editor-page         | 562.71 kB | 
+chunk-5MZAYP3H.js   | results-viewer-page | 123.61 kB | 
+chunk-VOKE6OGW.js   | -                   | 103.06 kB | 
+chunk-5LEXWAOV.js   | reports-page        |  61.61 kB | 
+chunk-2ZNETY7E.js   | -                   |  11.78 kB | 
+
+Application bundle generation complete. [1.785 seconds] - 2026-03-24T05:22:50.330Z
+
+Watch mode enabled. Watching for file changes...
+NOTE: Raw file sizes do not reflect development server per-request transformations.
+  ➜  Local:   http://localhost:4200/
+❯ Changes detected. Rebuilding...
+✔ Changes detected. Rebuilding...
+Initial chunk files | Names       |  Raw size
+main.js             | main        |   3.85 kB | 
+
+Lazy chunk files    | Names       |  Raw size
+chunk-QMCK7DBN.js   | editor-page | 562.71 kB | 
+
+Application bundle generation complete. [0.658 seconds] - 2026-03-24T05:30:28.098Z
+
+Page reload sent to client(s).
+❯ Changes detected. Rebuilding...
+✔ Changes detected. Rebuilding...
+Initial chunk files | Names       |  Raw size
+main.js             | main        |   3.85 kB | 
+
+Lazy chunk files    | Names       |  Raw size
+chunk-JIHQX4LO.js   | editor-page | 562.71 kB | 
+
+Application bundle generation complete. [0.418 seconds] - 2026-03-24T05:30:32.657Z
+
+Page reload sent to client(s).
+❯ Changes detected. Rebuilding...
+✔ Changes detected. Rebuilding...
+Initial chunk files | Names       |  Raw size
+main.js             | main        |   3.85 kB | 
+
+Lazy chunk files    | Names       |  Raw size
+chunk-WHZAXXLP.js   | editor-page | 563.21 kB | 
+
+Application bundle generation complete. [0.451 seconds] - 2026-03-24T05:30:39.564Z
+
+Page reload sent to client(s).
+❯ Changes detected. Rebuilding...
+✔ Changes detected. Rebuilding...
+Initial chunk files | Names       |  Raw size
+main.js             | main        |   3.85 kB | 
+
+Lazy chunk files    | Names       |  Raw size
+chunk-K5VENYPV.js   | editor-page | 563.20 kB | 
+
+Application bundle generation complete. [0.472 seconds] - 2026-03-24T05:30:45.514Z
+
+Component update sent to client(s).
+npm error Lifecycle script `start` failed with error:
+npm error code 143
+npm error path /home/dmitriis/workspace/github/TestForgeAI/apps/web
+npm error workspace @testcraft/web@0.0.0
+npm error location /home/dmitriis/workspace/github/TestForgeAI/apps/web
+npm error command failed
+npm error command sh -c ng serve

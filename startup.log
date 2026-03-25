@@ -1,0 +1,4 @@
+
+> @testcraft/root@0.0.0 start:all
+> python3 start.py --no-docker
+

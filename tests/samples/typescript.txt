@@ -1,0 +1,20 @@
+console.log("Hello from TypeScript!");
+console.log(`Node Version: ${process.version}`);
+
+// Type-safe operations
+interface Result {
+    message: string;
+    numbers: number[];
+    sum: number;
+}
+
+const numbers: number[] = Array.from({length: 10}, (_, i) => i + 1);
+const sum: number = numbers.reduce((a, b) => a + b, 0);
+console.log(`Sum of 1-10: ${sum}`);
+
+const result: Result = {
+    message: "Hello from TypeScript",
+    numbers,
+    sum
+};
+console.log(`JSON: ${JSON.stringify(result)}`);

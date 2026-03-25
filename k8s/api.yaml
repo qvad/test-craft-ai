@@ -1,0 +1,311 @@
+##
+# TestCraft API Deployment
+# Production-ready configuration with security contexts
+##
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: testcraft
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: api
+data:
+  # Server config
+  PORT: "3000"
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+
+  # Database config (credentials in secrets)
+  DB_HOST: "yugabyte"
+  DB_PORT: "5433"
+  DB_NAME: "testcraft"
+  DB_SSL: "false"
+  DB_POOL_SIZE: "10"
+
+  # TLS config (certificates mounted as secrets)
+  TLS_ENABLED: "false"
+  TLS_CERT_PATH: "/etc/ssl/certs/tls.crt"
+  TLS_KEY_PATH: "/etc/ssl/private/tls.key"
+
+  # Auth config
+  JWT_EXPIRY_SECONDS: "3600"
+  REFRESH_TOKEN_EXPIRY_DAYS: "30"
+
+  # Rate limiting
+  RATE_LIMIT_ENABLED: "true"
+  GLOBAL_RATE_LIMIT_MAX: "1000"
+  GLOBAL_RATE_LIMIT_WINDOW_MS: "60000"
+  AI_RATE_LIMIT_MAX: "100"
+  AI_RATE_LIMIT_WINDOW_MS: "60000"
+
+  # CORS (set specific origins in production)
+  CORS_ORIGIN: "https://testcraft.example.com"
+
+  # Metrics
+  METRICS_ENABLED: "true"
+  METRICS_PATH: "/metrics"
+
+  # Audit
+  AUDIT_ENABLED: "true"
+  AUDIT_RETENTION_DAYS: "90"
+
+  # K8s runner config
+  K8S_NAMESPACE: "testcraft-runners"
+  K8S_IN_CLUSTER: "true"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: testcraft
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: testcraft-api
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: testcraft
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: testcraft-api
+  template:
+    metadata:
+      labels:
+        app: testcraft-api
+        app.kubernetes.io/name: testcraft
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Security context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Service account (create if needed)
+      serviceAccountName: testcraft-api
+
+      # Anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: testcraft-api
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: api
+          image: testcraft-api:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          # Security context for the container
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # Environment from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: api-config
+
+          # Environment from Secrets
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: testcraft-db-credentials
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: testcraft-db-credentials
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: testcraft-jwt-secret
+                  key: JWT_SECRET
+            - name: AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: testcraft-ai-credentials
+                  key: AI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: testcraft-ai-credentials
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+
+          # Resource limits
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+
+          # Volume mounts for temp and certs
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls-certs
+              mountPath: /etc/ssl/certs
+              readOnly: true
+            - name: tls-keys
+              mountPath: /etc/ssl/private
+              readOnly: true
+
+          # Startup probe (for slow startups)
+          startupProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+
+      # Volumes
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: tls-certs
+          secret:
+            secretName: testcraft-tls
+            optional: true
+            items:
+              - key: tls.crt
+                path: tls.crt
+        - name: tls-keys
+          secret:
+            secretName: testcraft-tls
+            optional: true
+            items:
+              - key: tls.key
+                path: tls.key
+
+      # Termination grace period
+      terminationGracePeriodSeconds: 30
+
+---
+# Service Account for API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: testcraft-api
+  namespace: testcraft
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: api
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: testcraft
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: testcraft-api
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: testcraft
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

@@ -1,0 +1,36 @@
+source 'https://rubygems.org'
+
+# Database
+gem 'pg', '~> 1.5'
+gem 'mysql2', '~> 0.5'
+gem 'tiny_tds', '~> 2.1'
+gem 'mongo', '~> 2.19'
+gem 'redis', '~> 5.1'
+
+# HTTP
+gem 'faraday', '~> 2.9'
+gem 'httparty', '~> 0.21'
+gem 'rest-client', '~> 2.1'
+
+# JSON/Data
+gem 'json', '~> 2.7'
+gem 'oj', '~> 3.16'
+gem 'nokogiri', '~> 1.16'
+
+# Testing
+gem 'rspec', '~> 3.13'
+gem 'minitest', '~> 5.22'
+
+# Web frameworks (for API testing)
+gem 'sinatra', '~> 4.0'
+
+# Utilities
+gem 'activesupport', '~> 7.1'
+gem 'dry-validation', '~> 1.10'
+
+# AWS
+gem 'aws-sdk-s3', '~> 1.142'
+
+# Logging
+gem 'logger', '~> 1.6'
+gem 'semantic_logger', '~> 4.15'

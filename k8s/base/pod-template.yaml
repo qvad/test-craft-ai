@@ -1,0 +1,64 @@
+# This is a template - will be created dynamically by the orchestrator
+# Variables to replace: {{EXECUTION_ID}}, {{LANGUAGE}}, {{IMAGE}}, {{TIMEOUT}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: runner-{{EXECUTION_ID}}
+  namespace: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: runner
+    testcraft.io/language: "{{LANGUAGE}}"
+    testcraft.io/execution-id: "{{EXECUTION_ID}}"
+  annotations:
+    testcraft.io/created-at: "{{CREATED_AT}}"
+spec:
+  serviceAccountName: testcraft-runner
+  restartPolicy: Never
+  activeDeadlineSeconds: {{TIMEOUT}}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+    - name: runner
+      image: "{{IMAGE}}"
+      imagePullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "1"
+          memory: "1Gi"
+      env:
+        - name: EXECUTION_ID
+          value: "{{EXECUTION_ID}}"
+        - name: TIMEOUT
+          value: "{{TIMEOUT}}"
+        - name: CODE_DIR
+          value: "/app/code"
+        - name: OUTPUT_DIR
+          value: "/app/output"
+      volumeMounts:
+        - name: code-volume
+          mountPath: /app/code
+        - name: output-volume
+          mountPath: /app/output
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - ALL
+  volumes:
+    - name: code-volume
+      emptyDir: {}
+    - name: output-volume
+      emptyDir: {}
+  tolerations:
+    - key: "testcraft.io/runner"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"

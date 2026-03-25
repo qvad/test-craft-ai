@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: testcraft-runner
+  namespace: testcraft-runners
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: testcraft-runner-role
+  namespace: testcraft-runners
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: testcraft-runner-binding
+  namespace: testcraft-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: testcraft-runner-role
+subjects:
+  - kind: ServiceAccount
+    name: testcraft-runner
+    namespace: testcraft-runners
+---
+# Service account for the orchestrator (in default namespace)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: testcraft-orchestrator
+  namespace: default
+  labels:
+    app.kubernetes.io/name: testcraft
+    app.kubernetes.io/component: orchestrator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: testcraft-orchestrator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: testcraft-orchestrator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: testcraft-orchestrator-role
+subjects:
+  - kind: ServiceAccount
+    name: testcraft-orchestrator
+    namespace: default

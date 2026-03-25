@@ -1,0 +1,36 @@
+[package]
+name = "testcraft_runner"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+# Database
+tokio-postgres = "0.7"
+mysql = "24.0"
+tiberius = "0.12"
+mongodb = "2.8"
+redis = "0.24"
+
+# HTTP
+reqwest = { version = "0.11", features = ["json"] }
+hyper = { version = "1.1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.36", features = ["full"] }
+
+# Utilities
+uuid = { version = "1.7", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.11"
+
+# AWS
+aws-sdk-s3 = "1.14"
+
+# Testing
+assert_cmd = "2.0"
+predicates = "3.1"

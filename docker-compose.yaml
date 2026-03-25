@@ -1,0 +1,181 @@
+version: '3.8'
+
+services:
+  # TestCraft API Server
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      - DB_HOST=yugabyte
+      - DB_PORT=5433
+      - DB_NAME=testcraft
+      - DB_USER=yugabyte
+      - DB_PASSWORD=yugabyte
+      - K8S_IN_CLUSTER=false
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=pretty
+      - JWT_SECRET=dev-secret-change-in-production
+      - AUTH_SKIP_IN_DEV=true
+      - RATE_LIMIT_ENABLED=true
+      - METRICS_ENABLED=true
+      - AUDIT_ENABLED=true
+      - AI_API_KEY=${AI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CORS_ORIGIN=http://localhost:4200
+    depends_on:
+      yugabyte:
+        condition: service_healthy
+    volumes:
+      - ~/.kube:/root/.kube:ro  # Mount kubeconfig for K8s access
+    networks:
+      - testcraft
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # YugabyteDB with pgvector for RAG
+  yugabyte:
+    image: yugabytedb/yugabyte:2.20.1.0-b97
+    command: bin/yugabyted start --daemon=false --tserver_flags="ysql_enable_packed_row=true"
+    ports:
+      - "5433:5433"   # YSQL port
+      - "7000:7000"   # Master web UI
+      - "9000:9000"   # TServer web UI
+      - "9042:9042"   # YCQL port
+    environment:
+      - YSQL_USER=yugabyte
+      - YSQL_PASSWORD=yugabyte
+      - YSQL_DB=testcraft
+    volumes:
+      - yugabyte-data:/home/yugabyte/yb_data
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=yugabyte ysqlsh -h $(hostname -i) -p 5433 -U yugabyte -c 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - testcraft
+
+  # Java Runner (for local testing without K8s)
+  runner-java:
+    build:
+      context: ./docker/runners/java
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # Python Runner
+  runner-python:
+    build:
+      context: ./docker/runners/python
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # C# Runner
+  runner-csharp:
+    build:
+      context: ./docker/runners/csharp
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # JavaScript Runner
+  runner-javascript:
+    build:
+      context: ./docker/runners/javascript
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # TypeScript Runner
+  runner-typescript:
+    build:
+      context: ./docker/runners/typescript
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # Go Runner
+  runner-go:
+    build:
+      context: ./docker/runners/go
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # Rust Runner
+  runner-rust:
+    build:
+      context: ./docker/runners/rust
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # Ruby Runner
+  runner-ruby:
+    build:
+      context: ./docker/runners/ruby
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # PHP Runner
+  runner-php:
+    build:
+      context: ./docker/runners/php
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+  # Kotlin Runner
+  runner-kotlin:
+    build:
+      context: ./docker/runners/kotlin
+    volumes:
+      - ./tests/samples:/app/code:ro
+    networks:
+      - testcraft
+    profiles:
+      - runners
+
+volumes:
+  yugabyte-data:
+
+networks:
+  testcraft:
+    driver: bridge

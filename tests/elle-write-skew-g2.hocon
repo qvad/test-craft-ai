@@ -1,0 +1,408 @@
+testcraft {
+  version = "1.0"
+  plan {
+    name = "Elle-Write-Skew-G2-Detection"
+    description = """
+      Tests for G2 write-skew and G-single (read skew) anomalies in YugabyteDB.
+
+      Two classic scenarios are run concurrently:
+
+        1. Doctor on-call scheduling (G2): Each transaction reads "≥2 doctors on call"
+           and marks one as off-call. Under read-committed or snapshot isolation, both
+           can commit leaving nobody on call — a clear G2 write-skew violation.
+           Under SERIALIZABLE this must be prevented.
+
+        2. Bank balance invariant (G2): Two accounts, invariant = combined balance ≥ 0.
+           Concurrent transactions each read combined balance ≥ debit amount and debit
+           from different accounts. Under weak isolation both commit, violating the invariant.
+
+      Expected: serializable isolation detects the conflict and aborts one of the two
+      racing transactions, preserving all invariants.
+    """
+
+    variables {
+      yb_namespace     = "testcraft"
+      db_host          = "yugabyte.testcraft.svc.cluster.local"
+      db_port          = 5433
+      db_user          = "yugabyte"
+      db_pass          = "yugabyte"
+      db_name          = "testcraft"
+
+      num_doctors      = 10
+      test_duration_ms = 30000
+      doctor_threads   = 20
+      bank_threads     = 10
+    }
+
+    nodes = [
+
+      # ── Phase 1: Start YugabyteDB in Kubernetes ────────────────────────────────
+
+      {
+        name = "Apply-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      },
+      {
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      },
+
+      # ── Phase 2: Schema ─────────────────────────────────────────────────────────
+
+      {
+        name = "Create-G2-Schema"
+        type = "JDBC-Sampler"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user       = "${db_user}"
+          password   = "${db_pass}"
+          sql        = """
+            DROP TABLE IF EXISTS skew_log;
+            DROP TABLE IF EXISTS oncall_doctors;
+            DROP TABLE IF EXISTS skew_accounts;
+
+            -- Scenario 1: Doctor on-call scheduling
+            CREATE TABLE oncall_doctors (
+              id      SERIAL  PRIMARY KEY,
+              name    TEXT    NOT NULL,
+              on_call BOOLEAN NOT NULL DEFAULT true
+            );
+
+            INSERT INTO oncall_doctors (name, on_call)
+            SELECT 'Doctor-' || i, true FROM generate_series(1, 10) AS i;
+
+            -- Scenario 2: Two-account bank (per user)
+            CREATE TABLE skew_accounts (
+              user_id    INT NOT NULL,
+              account_id INT NOT NULL,
+              balance    INT NOT NULL DEFAULT 500,
+              PRIMARY KEY (user_id, account_id)
+            );
+
+            INSERT INTO skew_accounts (user_id, account_id, balance)
+            SELECT u, a, 500
+            FROM generate_series(1, 10) AS u,
+                 generate_series(1, 2)  AS a;
+
+            -- Full transaction log for G2 analysis
+            CREATE TABLE skew_log (
+              id       BIGSERIAL   PRIMARY KEY,
+              scenario TEXT        NOT NULL,
+              txn_id   BIGINT      NOT NULL,
+              op       TEXT        NOT NULL,
+              detail   TEXT,
+              ts       TIMESTAMPTZ DEFAULT now()
+            );
+          """
+        }
+      },
+
+      {
+        name = "Check-Isolation-Level"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "current_isolation"
+          sql            = "SHOW transaction_isolation;"
+        }
+      },
+
+      # ── Parallel G2 Workload ──────────────────────────────────────────────────
+
+      {
+        name = "Concurrent-Write-Skew-Tests"
+        type = "Parallel-Controller"
+        children = [
+
+          # Scenario 1: Doctor scheduling
+          {
+            name = "Doctor-On-Call-Skew"
+            type = "Loop-Controller"
+            config {
+              duration_ms = ${test_duration_ms}
+              concurrency = ${doctor_threads}
+              delay_ms    = 5
+            }
+            children = [
+              {
+                name = "Doctor-Go-Off-Call"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    DO $$
+                    DECLARE
+                      v_txn   BIGINT  := (extract(epoch from clock_timestamp()) * 1e6)::BIGINT
+                                        + pg_backend_pid();
+                      v_count INT;
+                      v_doc   INT;
+                    BEGIN
+                      -- Predicate read: how many doctors are on call?
+                      SELECT count(*) INTO v_count FROM oncall_doctors WHERE on_call = true;
+
+                      INSERT INTO skew_log(scenario, txn_id, op, detail)
+                      VALUES ('doctor', v_txn, 'read_count', v_count::text);
+
+                      -- Write: if enough on call, go off-call (classic G2 trigger)
+                      IF v_count >= 2 THEN
+                        SELECT id INTO v_doc
+                        FROM oncall_doctors
+                        WHERE on_call = true
+                        ORDER BY random() LIMIT 1
+                        FOR UPDATE SKIP LOCKED;
+
+                        IF FOUND THEN
+                          UPDATE oncall_doctors SET on_call = false WHERE id = v_doc;
+                          INSERT INTO skew_log(scenario, txn_id, op, detail)
+                          VALUES ('doctor', v_txn, 'set_off_call', v_doc::text);
+                        END IF;
+                      ELSE
+                        INSERT INTO skew_log(scenario, txn_id, op, detail)
+                        VALUES ('doctor', v_txn, 'skipped', 'only ' || v_count || ' on call');
+                      END IF;
+
+                    EXCEPTION WHEN serialization_failure OR deadlock_detected THEN
+                      INSERT INTO skew_log(scenario, txn_id, op, detail)
+                      VALUES ('doctor', v_txn, 'aborted', SQLERRM);
+                    END;
+                    $$;
+                  """
+                }
+              }
+            ]
+          },
+
+          # Scenario 2: Bank balance skew
+          {
+            name = "Bank-Balance-Skew"
+            type = "Loop-Controller"
+            config {
+              duration_ms = ${test_duration_ms}
+              concurrency = ${bank_threads}
+              delay_ms    = 10
+            }
+            children = [
+              {
+                name = "Bank-Concurrent-Debit"
+                type = "JDBC-Sampler"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user       = "${db_user}"
+                  password   = "${db_pass}"
+                  sql        = """
+                    DO $$
+                    DECLARE
+                      v_txn    BIGINT := (extract(epoch from clock_timestamp()) * 1e6)::BIGINT
+                                        + pg_backend_pid();
+                      v_user   INT   := floor(random() * 10)::INT + 1;
+                      v_total  INT;
+                      v_debit  INT   := 700;
+                    BEGIN
+                      -- Read combined balance (predicate read spanning both accounts)
+                      SELECT coalesce(sum(balance), 0) INTO v_total
+                      FROM skew_accounts WHERE user_id = v_user;
+
+                      INSERT INTO skew_log(scenario, txn_id, op, detail)
+                      VALUES ('bank', v_txn, 'read_balance', v_user || ':total=' || v_total);
+
+                      -- Both concurrent txns may see combined 1000 and each debit 700
+                      -- Under serializable one must fail; under weaker isolation: -400
+                      IF v_total >= v_debit THEN
+                        UPDATE skew_accounts
+                        SET balance = balance - v_debit
+                        WHERE user_id = v_user AND account_id = 1;
+
+                        INSERT INTO skew_log(scenario, txn_id, op, detail)
+                        VALUES ('bank', v_txn, 'debit', v_user || ':debit=' || v_debit);
+                      ELSE
+                        INSERT INTO skew_log(scenario, txn_id, op, detail)
+                        VALUES ('bank', v_txn, 'skipped', v_user || ':insufficient=' || v_total);
+                      END IF;
+
+                    EXCEPTION WHEN serialization_failure OR deadlock_detected THEN
+                      INSERT INTO skew_log(scenario, txn_id, op, detail)
+                      VALUES ('bank', v_txn, 'aborted', SQLERRM);
+                    END;
+                    $$;
+                  """
+                }
+              }
+            ]
+          }
+        ]
+      },
+
+      # ── Invariant Checks ──────────────────────────────────────────────────────
+
+      {
+        name = "Check-Doctor-Invariant"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "doctors_on_call"
+          sql            = "SELECT count(*) FROM oncall_doctors WHERE on_call = true;"
+        }
+      },
+
+      {
+        name = "Check-Negative-Balances"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "negative_users"
+          sql            = """
+            SELECT coalesce(
+              json_agg(json_build_object('user_id', user_id, 'total', total))::text,
+              '[]'
+            )
+            FROM (
+              SELECT user_id, sum(balance) AS total
+              FROM skew_accounts
+              GROUP BY user_id
+              HAVING sum(balance) < 0
+            ) AS t;
+          """
+        }
+      },
+
+      {
+        name = "Transaction-Abort-Rate"
+        type = "JDBC-Sampler"
+        config {
+          connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user           = "${db_user}"
+          password       = "${db_pass}"
+          resultVariable = "abort_stats"
+          sql            = """
+            SELECT
+              scenario,
+              count(DISTINCT txn_id)                                     AS total_txns,
+              count(*) FILTER (WHERE op = 'aborted')                     AS aborted,
+              count(*) FILTER (WHERE op IN ('set_off_call','debit'))      AS committed_writes,
+              count(*) FILTER (WHERE op = 'skipped')                     AS skipped
+            FROM skew_log
+            GROUP BY scenario;
+          """
+        }
+      },
+
+      # ── G2 Elle Analysis ──────────────────────────────────────────────────────
+
+      {
+        name = "Analyze-G2-Results"
+        type = "Script-Node"
+        config {
+          language = "javascript"
+          code     = """
+            const doctorsOnCall   = parseInt(context.vars.doctors_on_call  || '0');
+            const negativeRaw     = context.vars.negative_users || '[]';
+            const isolationLevel  = context.vars.current_isolation || 'unknown';
+
+            let negativeUsers = [];
+            try { negativeUsers = JSON.parse(negativeRaw) || []; } catch(_) {}
+
+            const anomalies = [];
+
+            // G2 violation 1: invariant "≥1 doctor on call" broken
+            if (doctorsOnCall === 0) {
+              anomalies.push({
+                type:    'G2-write-skew',
+                scenario: 'doctor-on-call',
+                description:
+                  'All doctors went off-call simultaneously. ' +
+                  'Each transaction read "≥2 on call" and unilaterally went off-call. ' +
+                  'Invariant: at least 1 must remain on-call — VIOLATED.',
+                severity: 'CRITICAL'
+              });
+            }
+
+            // G2 violation 2: negative account balances
+            if (negativeUsers.length > 0) {
+              anomalies.push({
+                type:    'G2-write-skew',
+                scenario: 'bank-balance',
+                description:
+                  negativeUsers.length + ' user(s) have negative combined balance. ' +
+                  'Concurrent transactions each read combined balance ≥ debit and both committed. ' +
+                  'Invariant: combined balance must be ≥ 0 — VIOLATED.',
+                affected: negativeUsers,
+                severity: 'CRITICAL'
+              });
+            }
+
+            context.vars.g2_status     = anomalies.length === 0 ? 'NO_ANOMALIES' : 'G2_DETECTED';
+            context.vars.g2_anomalies  = JSON.stringify(anomalies, null, 2);
+            context.vars.doctors_count = String(doctorsOnCall);
+
+            const lines = [
+              '',
+              '╔══════════════════════════════════════════════════════╗',
+              '║          Elle G2 Write-Skew Analysis Report          ║',
+              '╠══════════════════════════════════════════════════════╣',
+              '║  Isolation level     : ' + isolationLevel.padEnd(29) + '║',
+              '║  Doctors on call     : ' + String(doctorsOnCall).padEnd(29) + '║',
+              '║  Users neg. balance  : ' + String(negativeUsers.length).padEnd(29) + '║',
+              '║  Anomalies detected  : ' + String(anomalies.length).padEnd(29) + '║',
+              '╠══════════════════════════════════════════════════════╣',
+              anomalies.length === 0
+                ? '║  ✓ NO G2 ANOMALIES — isolation is sufficient        ║'
+                : '║  ✗ G2 WRITE-SKEW DETECTED — invariants violated     ║',
+              '╚══════════════════════════════════════════════════════╝',
+            ];
+
+            if (anomalies.length > 0) {
+              lines.push('');
+              for (const a of anomalies)
+                lines.push('  [' + a.type + ' / ' + a.scenario + ']: ' + a.description);
+            }
+
+            console.log(lines.join('\n'));
+
+            if (anomalies.length > 0)
+              throw new Error(
+                'G2 write-skew anomalies detected under ' + isolationLevel + ': ' +
+                anomalies.map(a => a.scenario).join(', ')
+              );
+          """
+        }
+      }
+
+    ]
+  }
+}

@@ -1,0 +1,415 @@
+/**
+ * Database Context Example
+ *
+ * Demonstrates how to:
+ * 1. Create database connections and store them in context
+ * 2. Use context variables across test steps
+ * 3. Inject variables into generated code
+ * 4. Handle sensitive data securely
+ */
+
+testcraft {
+  plan {
+    name = "Database Context Demo"
+    description = "Demonstrates context management with database connections"
+    version = "1.0"
+    tags = ["demo", "database", "context"]
+
+    config {
+      timeout = 300000
+      parallelExecution = false  # Sequential for demo purposes
+    }
+
+    # Define sensitive variables (stored encrypted)
+    secrets {
+      db_password = ${?DB_PASSWORD}
+      api_key = ${?API_KEY}
+      jwt_secret = ${?JWT_SECRET}
+    }
+
+    # Regular variables
+    variables {
+      yb_namespace = ${?YB_NAMESPACE} "testcraft"
+      environment  = ${?ENVIRONMENT} "development"
+      db_host      = ${?DB_HOST} "yugabyte.testcraft.svc.cluster.local"
+      db_port      = ${?DB_PORT} 5433
+      db_name      = ${?DB_NAME} "testcraft"
+      db_user      = ${?DB_USER} "yugabyte"
+    }
+
+    nodes = [
+
+      # ==========================================
+      # Step 0: Start YugabyteDB in Kubernetes
+      # ==========================================
+      {
+        id   = "apply-namespace"
+        name = "Apply-YB-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "deploy-yugabyte"
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        dependsOn = ["apply-namespace"]
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-pods-ready"
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        dependsOn = ["deploy-yugabyte"]
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-ysql-ready"
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        dependsOn = ["wait-pods-ready"]
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      }
+
+      # ==========================================
+      # Step 1: Setup Database Connection
+      # ==========================================
+      {
+        id = "setup-db-connection"
+        type = "context-setup"
+        name = "Setup Database Connection"
+        config {
+          # Register a database connection that will be available in context
+          connections = [
+            {
+              name = "primary_db"
+              type = "yugabyte"
+              host = "${variables.db_host}"
+              port = ${variables.db_port}
+              database = "${variables.db_name}"
+              username = "${variables.db_user}"
+              password = "${secrets.db_password}"
+              options {
+                pool_size = 5
+                connect_timeout = 10000
+              }
+            }
+          ]
+
+          # Set additional context variables
+          variables = [
+            { name = "test_run_id", value = "${__uuid()}", scope = "global" }
+            { name = "start_time", value = "${__timestamp()}", scope = "plan" }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 2: Create Test Database Schema
+      # ==========================================
+      {
+        id = "create-schema"
+        type = "jdbc-request"
+        name = "Create Test Schema"
+        dependsOn = ["setup-db-connection"]
+        config {
+          # Reference the connection by name
+          connectionRef = "primary_db"
+          query = """
+            CREATE TABLE IF NOT EXISTS test_users (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              email VARCHAR(255) UNIQUE NOT NULL,
+              name VARCHAR(255),
+              created_at TIMESTAMP DEFAULT NOW(),
+              test_run_id UUID
+            );
+
+            CREATE TABLE IF NOT EXISTS test_orders (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              user_id UUID REFERENCES test_users(id),
+              amount DECIMAL(10, 2),
+              status VARCHAR(50),
+              created_at TIMESTAMP DEFAULT NOW(),
+              test_run_id UUID
+            );
+          """
+          assertions = [
+            { type = "no-error" }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 3: Generate Test Data with AI
+      # ==========================================
+      {
+        id = "generate-test-data"
+        type = "ai-data-generator"
+        name = "Generate Test Users"
+        dependsOn = ["create-schema"]
+        config {
+          prompt = "Generate 10 realistic user profiles for e-commerce testing"
+          schema = {
+            type = "array"
+            items = {
+              type = "object"
+              properties = {
+                email = { type = "string", format = "email" }
+                name = { type = "string" }
+              }
+            }
+          }
+          extractors = [
+            { name = "test_users", type = "full-response", scope = "plan" }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 4: Insert Generated Data Using Python
+      # ==========================================
+      {
+        id = "insert-test-data"
+        type = "code-execution"
+        name = "Insert Test Data via Python"
+        dependsOn = ["generate-test-data"]
+        config {
+          language = "python"
+
+          # Specify which context variables to inject
+          injectVariables = ["test_users", "test_run_id"]
+          injectConnections = ["primary_db"]
+
+          # The code will have access to injected variables
+          code = """
+            import psycopg2
+            import json
+
+            # Connection config is injected from context
+            conn = psycopg2.connect(
+                host=primary_db_config['host'],
+                port=primary_db_config['port'],
+                database=primary_db_config['database'],
+                user=primary_db_config['username'],
+                password=primary_db_config['password']
+            )
+
+            cursor = conn.cursor()
+
+            # test_users is injected from previous step
+            users_data = test_users if isinstance(test_users, list) else json.loads(test_users)
+            inserted_ids = []
+
+            for user in users_data:
+                cursor.execute(
+                    '''INSERT INTO test_users (email, name, test_run_id)
+                       VALUES (%s, %s, %s) RETURNING id''',
+                    (user['email'], user['name'], test_run_id)
+                )
+                user_id = cursor.fetchone()[0]
+                inserted_ids.append(str(user_id))
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            # Return results to context
+            result = {
+                'inserted_count': len(inserted_ids),
+                'user_ids': inserted_ids
+            }
+            print(json.dumps(result))
+          """
+
+          extractors = [
+            { name = "inserted_user_ids", type = "json-path", path = "$.user_ids", scope = "plan" }
+            { name = "user_count", type = "json-path", path = "$.inserted_count" }
+          ]
+
+          assertions = [
+            { type = "exit-code", expected = 0 }
+            { type = "json-path", path = "$.inserted_count", minimum = 5 }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 5: Create Orders Using Java
+      # ==========================================
+      {
+        id = "create-orders"
+        type = "code-execution"
+        name = "Create Test Orders via Java"
+        dependsOn = ["insert-test-data"]
+        config {
+          language = "java"
+          injectVariables = ["inserted_user_ids", "test_run_id"]
+          injectConnections = ["primary_db"]
+
+          code = """
+            import java.sql.*;
+            import java.util.*;
+            import java.math.BigDecimal;
+
+            public class CreateOrders {
+                public static void main(String[] args) throws Exception {
+                    // Connection from context
+                    String url = String.format(
+                        "jdbc:postgresql://%s:%d/%s",
+                        TestCraftContext.primary_db_host,
+                        TestCraftContext.primary_db_port,
+                        TestCraftContext.primary_db_database
+                    );
+
+                    Connection conn = DriverManager.getConnection(
+                        url,
+                        TestCraftContext.primary_db_username,
+                        TestCraftContext.primary_db_password
+                    );
+
+                    PreparedStatement stmt = conn.prepareStatement(
+                        "INSERT INTO test_orders (user_id, amount, status, test_run_id) VALUES (?::uuid, ?, ?, ?::uuid)"
+                    );
+
+                    Random rand = new Random();
+                    String[] statuses = {"pending", "completed", "shipped", "cancelled"};
+                    int ordersCreated = 0;
+
+                    // inserted_user_ids from context
+                    for (String userId : TestCraftContext.inserted_user_ids) {
+                        // Create 1-3 orders per user
+                        int numOrders = rand.nextInt(3) + 1;
+                        for (int i = 0; i < numOrders; i++) {
+                            stmt.setString(1, userId);
+                            stmt.setBigDecimal(2, BigDecimal.valueOf(rand.nextDouble() * 500 + 10));
+                            stmt.setString(3, statuses[rand.nextInt(statuses.length)]);
+                            stmt.setString(4, TestCraftContext.test_run_id);
+                            stmt.executeUpdate();
+                            ordersCreated++;
+                        }
+                    }
+
+                    stmt.close();
+                    conn.close();
+
+                    System.out.println("{\\"orders_created\\": " + ordersCreated + "}");
+                }
+            }
+          """
+
+          extractors = [
+            { name = "orders_created", type = "json-path", path = "$.orders_created" }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 6: Verify Data with SQL Queries
+      # ==========================================
+      {
+        id = "verify-data"
+        type = "jdbc-request"
+        name = "Verify Test Data"
+        dependsOn = ["create-orders"]
+        config {
+          connectionRef = "primary_db"
+          query = """
+            SELECT
+              (SELECT COUNT(*) FROM test_users WHERE test_run_id = '${test_run_id}'::uuid) as user_count,
+              (SELECT COUNT(*) FROM test_orders WHERE test_run_id = '${test_run_id}'::uuid) as order_count,
+              (SELECT SUM(amount) FROM test_orders WHERE test_run_id = '${test_run_id}'::uuid) as total_amount
+          """
+          extractors = [
+            { name = "final_user_count", type = "column", column = "user_count" }
+            { name = "final_order_count", type = "column", column = "order_count" }
+            { name = "total_order_amount", type = "column", column = "total_amount" }
+          ]
+          assertions = [
+            { type = "column-value", column = "user_count", minimum = 5 }
+            { type = "column-value", column = "order_count", minimum = 5 }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 7: API Testing with Context Variables
+      # ==========================================
+      {
+        id = "test-api-with-data"
+        type = "http-request"
+        name = "Test API with Generated Data"
+        dependsOn = ["verify-data"]
+        config {
+          method = "POST"
+          url = "http://localhost:3000/api/v1/reports/generate"
+          headers {
+            Content-Type = "application/json"
+            Authorization = "Bearer ${secrets.api_key}"
+          }
+          body = """
+            {
+              "test_run_id": "${test_run_id}",
+              "user_count": ${final_user_count},
+              "order_count": ${final_order_count},
+              "total_amount": ${total_order_amount}
+            }
+          """
+          assertions = [
+            { type = "status", expected = 200 }
+          ]
+        }
+      }
+
+      # ==========================================
+      # Step 8: Cleanup
+      # ==========================================
+      {
+        id = "cleanup"
+        type = "jdbc-request"
+        name = "Cleanup Test Data"
+        dependsOn = ["test-api-with-data"]
+        runAlways = true  # Run even if previous steps fail
+        config {
+          connectionRef = "primary_db"
+          query = """
+            DELETE FROM test_orders WHERE test_run_id = '${test_run_id}'::uuid;
+            DELETE FROM test_users WHERE test_run_id = '${test_run_id}'::uuid;
+          """
+        }
+      }
+    ]
+
+    # Post-execution hooks
+    hooks {
+      afterAll = [
+        {
+          type = "context-export"
+          config {
+            # Export context variables to a file for debugging
+            outputFile = "test-results/context-${test_run_id}.json"
+            includeLogs = true
+            maskSensitive = true
+          }
+        }
+      ]
+    }
+  }
+}

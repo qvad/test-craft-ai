@@ -1,0 +1,426 @@
+/**
+ * Integration Tests
+ *
+ * Comprehensive API integration tests
+ * Run time: ~15-30 minutes
+ */
+
+testcraft {
+  plan {
+    name = "Integration Tests"
+    description = "Full API integration test suite"
+    version = "1.0"
+    tags = ["integration", "api", "full"]
+
+    config {
+      timeout = 1800000  # 30 minutes
+      stopOnError = false
+      parallelExecution = true
+      maxConcurrent = 5
+    }
+
+    variables {
+      yb_namespace = ${?YB_NAMESPACE} "testcraft"
+      baseUrl      = ${?BASE_URL} "https://api.example.com"
+      apiKey       = ${?API_KEY}
+      testUser     = "integration-test-user"
+      testEmail    = "test@example.com"
+      db_host      = ${?DB_HOST} "yugabyte.testcraft.svc.cluster.local"
+      db_port      = ${?DB_PORT} 5433
+      db_name      = ${?DB_NAME} "testcraft"
+      db_user      = ${?DB_USER} "yugabyte"
+      db_pass      = ${?DB_PASS} "yugabyte"
+    }
+
+    # Reusable authentication setup
+    setup = [
+      {
+        id = "setup-auth"
+        type = "http-request"
+        name = "Setup: Get Auth Token"
+        config {
+          method = "POST"
+          url = "${variables.baseUrl}/auth/token"
+          headers {
+            Content-Type = "application/json"
+          }
+          body = """
+            {
+              "grant_type": "client_credentials",
+              "client_id": "integration-tests",
+              "client_secret": "${variables.apiKey}"
+            }
+          """
+          extractors = [
+            { name = "auth_token", type = "json-path", path = "$.access_token", scope = "global" }
+          ]
+        }
+      }
+    ]
+
+    # Test cleanup
+    teardown = [
+      {
+        id = "cleanup-test-data"
+        type = "http-request"
+        name = "Cleanup: Remove Test Data"
+        config {
+          method = "DELETE"
+          url = "${variables.baseUrl}/test/cleanup"
+          headers {
+            Authorization = "Bearer ${auth_token}"
+          }
+        }
+      }
+    ]
+
+    nodes = [
+
+      # ── K8s: Start YugabyteDB ────────────────────────────────────────────────────
+
+      {
+        id   = "apply-namespace"
+        name = "Apply-YB-Namespace"
+        type = "Shell-Command"
+        config {
+          command   = "bash"
+          arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "deploy-yugabyte"
+        name = "Deploy-YugabyteDB"
+        type = "Shell-Command"
+        dependsOn = ["apply-namespace"]
+        config {
+          command   = "kubectl"
+          arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-pods-ready"
+        name = "Wait-Pods-Ready"
+        type = "Shell-Command"
+        dependsOn = ["deploy-yugabyte"]
+        config {
+          command   = "kubectl"
+          arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
+          expectedReturnCode = 0
+        }
+      }
+
+      {
+        id   = "wait-ysql-ready"
+        name = "Wait-YSQL-Ready"
+        type = "Shell-Command"
+        dependsOn = ["wait-pods-ready"]
+        config {
+          command   = "bash"
+          arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
+          expectedReturnCode = 0
+        }
+      }
+
+      # ── Integration Tests ────────────────────────────────────────────────────────
+
+      # ==========================================
+      # User Management Tests
+      # ==========================================
+      {
+        id = "user-crud"
+        type = "transaction-controller"
+        name = "User CRUD Operations"
+        children = [
+          {
+            id = "create-user"
+            type = "http-request"
+            name = "Create User"
+            config {
+              method = "POST"
+              url = "${variables.baseUrl}/users"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+                Content-Type = "application/json"
+              }
+              body = """
+                {
+                  "username": "${variables.testUser}",
+                  "email": "${variables.testEmail}",
+                  "role": "user"
+                }
+              """
+              extractors = [
+                { name = "created_user_id", type = "json-path", path = "$.id" }
+              ]
+              assertions = [
+                { type = "status", expected = 201 }
+                { type = "json-path", path = "$.username", expected = "${variables.testUser}" }
+              ]
+            }
+          }
+
+          {
+            id = "get-user"
+            type = "http-request"
+            name = "Get User by ID"
+            dependsOn = ["create-user"]
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/users/${created_user_id}"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "status", expected = 200 }
+                { type = "json-path", path = "$.id", expected = "${created_user_id}" }
+              ]
+            }
+          }
+
+          {
+            id = "update-user"
+            type = "http-request"
+            name = "Update User"
+            dependsOn = ["get-user"]
+            config {
+              method = "PATCH"
+              url = "${variables.baseUrl}/users/${created_user_id}"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+                Content-Type = "application/json"
+              }
+              body = """
+                {
+                  "role": "admin"
+                }
+              """
+              assertions = [
+                { type = "status", expected = 200 }
+                { type = "json-path", path = "$.role", expected = "admin" }
+              ]
+            }
+          }
+
+          {
+            id = "delete-user"
+            type = "http-request"
+            name = "Delete User"
+            dependsOn = ["update-user"]
+            config {
+              method = "DELETE"
+              url = "${variables.baseUrl}/users/${created_user_id}"
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "status", expected = 204 }
+              ]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # Product API Tests
+      # ==========================================
+      {
+        id = "product-tests"
+        type = "transaction-controller"
+        name = "Product API Tests"
+        children = [
+          {
+            id = "list-products"
+            type = "http-request"
+            name = "List Products"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/products"
+              params {
+                page = 1
+                limit = 10
+              }
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "status", expected = 200 }
+                { type = "json-path", path = "$.items", isArray = true }
+                { type = "json-path", path = "$.total", isNumber = true }
+              ]
+            }
+          }
+
+          {
+            id = "search-products"
+            type = "http-request"
+            name = "Search Products"
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/products/search"
+              params {
+                q = "test"
+                category = "electronics"
+              }
+              headers {
+                Authorization = "Bearer ${auth_token}"
+              }
+              assertions = [
+                { type = "status", expected = 200 }
+                { type = "response-time", maxMs = 2000 }
+              ]
+            }
+          }
+
+          {
+            id = "product-filters"
+            type = "foreach-controller"
+            name = "Test Product Filters"
+            dataSource = [
+              { filter = "price_asc", field = "price" }
+              { filter = "price_desc", field = "price" }
+              { filter = "name_asc", field = "name" }
+              { filter = "rating", field = "rating" }
+            ]
+            children = [
+              {
+                id = "filter-products"
+                type = "http-request"
+                name = "Filter by ${item.filter}"
+                config {
+                  method = "GET"
+                  url = "${variables.baseUrl}/products"
+                  params {
+                    sort = "${item.filter}"
+                  }
+                  headers {
+                    Authorization = "Bearer ${auth_token}"
+                  }
+                  assertions = [
+                    { type = "status", expected = 200 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+      # ==========================================
+      # AI-Powered Tests
+      # ==========================================
+      {
+        id = "ai-validation"
+        type = "transaction-controller"
+        name = "AI-Powered Validation"
+        children = [
+          {
+            id = "ai-data-gen"
+            type = "ai-data-generator"
+            name = "Generate Test Data"
+            config {
+              prompt = "Generate 5 realistic user profiles with name, email, age, and address"
+              schema = {
+                type = "array"
+                items = {
+                  type = "object"
+                  properties = {
+                    name = { type = "string" }
+                    email = { type = "string", format = "email" }
+                    age = { type = "integer", minimum = 18, maximum = 80 }
+                    address = { type = "string" }
+                  }
+                }
+              }
+              extractors = [
+                { name = "test_users", type = "full-response" }
+              ]
+            }
+          }
+
+          {
+            id = "ai-response-check"
+            type = "ai-response-validator"
+            name = "Validate API Response Quality"
+            dependsOn = ["list-products"]
+            config {
+              responseVariable = "last_response"
+              validations = [
+                "Response contains valid product data"
+                "All required fields are present"
+                "Prices are in valid currency format"
+                "No PII or sensitive data exposed"
+              ]
+              threshold = 0.8
+            }
+          }
+
+          {
+            id = "ai-anomaly-check"
+            type = "ai-anomaly-detector"
+            name = "Check for Response Anomalies"
+            config {
+              baseline = "previous-runs"
+              sensitivity = "medium"
+              checkTypes = ["response-time", "payload-size", "error-rate"]
+            }
+          }
+        ]
+      }
+
+      # ==========================================
+      # Performance Assertions
+      # ==========================================
+      {
+        id = "perf-checks"
+        type = "transaction-controller"
+        name = "Performance Checks"
+        children = [
+          {
+            id = "response-time-check"
+            type = "http-request"
+            name = "Response Time SLA"
+            repeat = 10
+            config {
+              method = "GET"
+              url = "${variables.baseUrl}/products"
+              assertions = [
+                { type = "response-time", maxMs = 500 }
+                { type = "response-time", percentile = 95, maxMs = 1000 }
+              ]
+            }
+          }
+
+          {
+            id = "concurrent-requests"
+            type = "thread-group"
+            name = "Concurrent Request Test"
+            config {
+              threads = 10
+              rampUp = 5
+              duration = 30
+              iterations = 100
+            }
+            children = [
+              {
+                id = "concurrent-get"
+                type = "http-request"
+                name = "Concurrent GET"
+                config {
+                  method = "GET"
+                  url = "${variables.baseUrl}/products"
+                  headers {
+                    Authorization = "Bearer ${auth_token}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

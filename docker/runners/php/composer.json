@@ -1,0 +1,26 @@
+{
+    "name": "testcraft/php-runner",
+    "description": "PHP runner for TestCraft AI",
+    "type": "project",
+    "require": {
+        "php": "^8.3",
+        "guzzlehttp/guzzle": "^7.8",
+        "symfony/http-client": "^7.0",
+        "doctrine/dbal": "^3.8",
+        "predis/predis": "^2.2",
+        "mongodb/mongodb": "^1.17",
+        "aws/aws-sdk-php": "^3.299",
+        "google/cloud-storage": "^1.41",
+        "monolog/monolog": "^3.5",
+        "symfony/validator": "^7.0",
+        "nesbot/carbon": "^3.1",
+        "ramsey/uuid": "^4.7",
+        "phpunit/phpunit": "^11.0",
+        "vlucas/phpdotenv": "^5.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "TestCraft\\": "src/"
+        }
+    }
+}

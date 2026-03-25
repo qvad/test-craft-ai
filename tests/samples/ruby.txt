@@ -1,0 +1,12 @@
+puts "Hello from Ruby!"
+puts "Ruby Version: #{RUBY_VERSION}"
+
+# Test some basic operations
+numbers = (1..10).to_a
+sum = numbers.sum
+puts "Sum of 1-10: #{sum}"
+
+# Test JSON handling
+require 'json'
+data = { message: "Hello", numbers: numbers, sum: sum }
+puts "JSON: #{data.to_json}"
