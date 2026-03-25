@@ -20,6 +20,26 @@ export class K8sClient {
       this.kc.loadFromDefault();
     }
 
+    // When http_proxy / https_proxy are set, tunnel-agent routes K8s API calls
+    // through the proxy and sets the IP address as TLS SNI, which Node.js v17+
+    // rejects with ERR_INVALID_ARG_VALUE. Fix: add the K8s server IP to no_proxy
+    // so the HTTP client connects to it directly, bypassing the proxy.
+    const currentCluster = this.kc.getCurrentCluster();
+    const serverMatch = currentCluster?.server?.match(/https?:\/\/([\d.]+)/);
+    if (serverMatch) {
+      const serverIp = serverMatch[1];
+      const noProxy = process.env.no_proxy || process.env.NO_PROXY || '';
+      if (!noProxy.split(',').map(s => s.trim()).includes(serverIp)) {
+        const updated = noProxy ? `${noProxy},${serverIp}` : serverIp;
+        process.env.no_proxy = updated;
+        process.env.NO_PROXY = updated;
+        logger.debug(
+          { server: currentCluster!.server, serverIp },
+          '[K8s] Added K8s server IP to no_proxy to bypass HTTP proxy'
+        );
+      }
+    }
+
     this.coreApi = this.kc.makeApiClient(k8s.CoreV1Api);
     this.exec = new k8s.Exec(this.kc);
     this.log = new k8s.Log(this.kc);

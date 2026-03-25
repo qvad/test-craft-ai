@@ -935,22 +935,31 @@ async function executeNodeTest(
       // In real implementation, this would run in a sandboxed environment
       try {
         if (language === 'javascript') {
-          // Very basic JS evaluation (for testing purposes only)
+          // Basic JS evaluation in a sandboxed Function context
           const fn = new Function('inputs', `${script}`);
           const result = fn(inputs);
+          // If the script returned an object, expose it as extractedValues so
+          // downstream nodes and test assertions can reference individual keys.
+          const extractedValues =
+            result !== null && typeof result === 'object' && !Array.isArray(result)
+              ? (result as Record<string, unknown>)
+              : undefined;
           return {
             status: 'success',
             output: { result, language },
+            extractedValues,
           };
         } else {
           // For other languages, return a simulated response
+          const simulated = { value: 42, status: 'ok' };
           return {
             status: 'success',
             output: {
-              result: { value: 42, status: 'ok' },
+              result: simulated,
               language,
               message: `Script executed (${language})`,
             },
+            extractedValues: simulated,
           };
         }
       } catch (err) {

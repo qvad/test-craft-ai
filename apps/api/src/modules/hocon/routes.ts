@@ -18,7 +18,9 @@ import { logger } from '../../common/logger.js';
 const storage = new TestPlanStorage();
 
 interface ImportBody {
-  hoconContent: string;
+  content?: string;       // sent by web frontend
+  hoconContent?: string;  // sent by CLI / direct API callers
+  format?: 'hocon' | 'json';
   nameOverride?: string;
   tags?: string[];
 }
@@ -155,11 +157,16 @@ export async function hoconRoutes(fastify: FastifyInstance): Promise<void> {
     request: FastifyRequest<{ Body: ImportBody }>,
     reply: FastifyReply
   ) => {
-    const { hoconContent, nameOverride, tags = [] } = request.body;
+    const { content, hoconContent, nameOverride, tags = [] } = request.body;
+    const rawContent = content ?? hoconContent;
+
+    if (!rawContent) {
+      return reply.status(400).send({ error: 'Missing required field: content or hoconContent' });
+    }
 
     try {
       // Parse the HOCON content using the robust HoconParser
-      const parseResult = await hoconParser.parse(hoconContent);
+      const parseResult = await hoconParser.parse(rawContent);
 
       if (parseResult.errors.length > 0) {
         return reply.status(400).send({
@@ -191,7 +198,7 @@ export async function hoconRoutes(fastify: FastifyInstance): Promise<void> {
       testPlan.nodes = normalizedNodes;
 
       // Save the test plan
-      const plan = await storage.save(hoconContent, {
+      const plan = await storage.save(rawContent, {
         author: nameOverride || testPlan.name,
       });
 
