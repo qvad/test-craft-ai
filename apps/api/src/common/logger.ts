@@ -1,4 +1,4 @@
-import pino from 'pino';
+import { pino } from 'pino';
 
 /**
  * Sensitive data patterns to mask in logs
@@ -16,8 +16,15 @@ const MASK_PATTERNS: [RegExp, string][] = [
 /**
  * Mask sensitive data in log messages
  */
-function maskSensitiveData(obj: unknown): unknown {
+function maskSensitiveData(obj: unknown, seen = new WeakSet()): unknown {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
   if (typeof obj === 'string') {
+    // If already masked, don't process again to avoid infinite recursion
+    if (obj.includes('***MASKED***')) return obj;
+    
     let masked = obj;
     for (const [pattern, replacement] of MASK_PATTERNS) {
       masked = masked.replace(pattern, replacement);
@@ -26,17 +33,22 @@ function maskSensitiveData(obj: unknown): unknown {
   }
 
   if (Array.isArray(obj)) {
-    return obj.map(maskSensitiveData);
+    if (seen.has(obj)) return '[Circular]';
+    seen.add(obj);
+    return obj.map(item => maskSensitiveData(item, seen));
   }
 
-  if (obj && typeof obj === 'object') {
+  if (typeof obj === 'object') {
+    if (seen.has(obj)) return '[Circular]';
+    seen.add(obj);
+    
     const masked: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj)) {
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
       // Mask known sensitive field names
       if (/password|secret|token|apikey|api_key|authorization/i.test(key)) {
         masked[key] = '***MASKED***';
       } else {
-        masked[key] = maskSensitiveData(value);
+        masked[key] = maskSensitiveData(value, seen);
       }
     }
     return masked;
@@ -50,7 +62,11 @@ function maskSensitiveData(obj: unknown): unknown {
  */
 const formatters = {
   log(obj: Record<string, unknown>) {
-    return maskSensitiveData(obj) as Record<string, unknown>;
+    try {
+      return maskSensitiveData(obj) as Record<string, unknown>;
+    } catch {
+      return obj;
+    }
   },
 };
 

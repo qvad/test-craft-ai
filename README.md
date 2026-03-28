@@ -97,6 +97,7 @@ Fastify REST API with modular plugin architecture. All routes under `/api/v1/`. 
 | `ai` | AI code generation with RAG-augmented context |
 | `hocon` | HOCON test plan parsing and storage |
 | `context` | Execution context and variable management |
+| `vars` | GlobalVarsService — live variable sharing between API and K8s/Docker runners |
 | `reporting` | Report generation (JUnit, HTML, JSON, CSV, Markdown) |
 | `testing` | Test execution routes |
 | `websocket` | Real-time execution updates |
@@ -148,6 +149,7 @@ The `tests/` directory contains ready-to-import example plans:
 | `elle-list-append-serializability.hocon` | Elle list-append serializability checks |
 | `elle-write-skew-g2.hocon` | Elle G2-item write-skew / anti-dependency cycle detection |
 | `yugabyte-chaos-consistency.hocon` | YugabyteDB partition tolerance + consistency under chaos |
+| `yugabyte-chaos-consistency-fixed.hocon` | Bank transfer consistency under node failures — high-contention variant |
 
 ## Testing
 
