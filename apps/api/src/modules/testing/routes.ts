@@ -9,7 +9,15 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { spawn } from 'child_process';
 import { logger } from '../../common/logger.js';
 import { k8sClient } from '../containers/k8s-client.js';
+import { ContainerOrchestrator } from '../containers/orchestrator.js';
+import { aiService } from '../ai/ai-service.js';
 import { config } from '../../config/index.js';
+import { Kafka } from 'kafkajs';
+import Redis from 'ioredis';
+
+// Singleton instance for testing
+const orchestrator = new ContainerOrchestrator();
+
 import { safeRegex, safeRegexTest, safeRegexExec } from '../../common/safe-regex.js';
 import pg from 'pg';
 
@@ -25,13 +33,12 @@ function substituteVariables(
   context: Record<string, unknown>
 ): unknown {
   if (typeof value === 'string') {
-    // Replace all ${varName} patterns
+    // Replace all ${varName} patterns ONLY if they exist in context
     return value.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-      const contextValue = context[varName];
-      if (contextValue !== undefined) {
-        return String(contextValue);
+      if (context[varName] !== undefined) {
+        return String(context[varName]);
       }
-      // Return original if variable not found
+      // Keep original match if not in context, allowing handlers to resolve later
       return match;
     });
   }
@@ -934,22 +941,54 @@ async function executeNodeTest(
     }
 
     // =========================================================================
+    // CODE EXECUTION - REAL RUNNERS
+    // =========================================================================
+    case 'code-execution': {
+      const { language, code, timeout = 30000, dependencies = [] } = config;
+      log('info', `Executing ${language} code in real runner`);
+
+      try {
+        const result = await orchestrator.execute({
+          language: language as any,
+          code: code as string,
+          timeout: timeout as number,
+          dependencies: dependencies as string[],
+        });
+
+        log('info', `Code execution completed with exit code ${result.exitCode}`);
+
+        return {
+          status: result.exitCode === 0 ? 'success' : 'error',
+          output: {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            duration: result.duration,
+          },
+          error: result.exitCode === 0 ? undefined : `Execution failed: ${result.stderr}`,
+        };
+      } catch (err) {
+        log('error', `Orchestrator execution failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        return {
+          status: 'error',
+          output: null,
+          error: err instanceof Error ? err.message : 'Runner execution failed',
+        };
+      }
+    }
+
+    // =========================================================================
     // SCRIPT SAMPLER
     // =========================================================================
     case 'script-sampler': {
-      const { language, script } = config;
+      const { language, script, timeout = 30000 } = config;
 
       log('debug', `Script sampler: ${language}`);
 
-      // For testing, we simulate script execution
-      // In real implementation, this would run in a sandboxed environment
-      try {
-        if (language === 'javascript') {
-          // Basic JS evaluation in a sandboxed Function context
+      if (language === 'javascript') {
+        try {
           const fn = new Function('inputs', `${script}`);
           const result = fn(inputs);
-          // If the script returned an object, expose it as extractedValues so
-          // downstream nodes and test assertions can reference individual keys.
           const extractedValues =
             result !== null && typeof result === 'object' && !Array.isArray(result)
               ? (result as Record<string, unknown>)
@@ -959,25 +998,39 @@ async function executeNodeTest(
             output: { result, language },
             extractedValues,
           };
-        } else {
-          // For other languages, return a simulated response
-          const simulated = { value: 42, status: 'ok' };
+        } catch (err) {
           return {
-            status: 'success',
-            output: {
-              result: simulated,
-              language,
-              message: `Script executed (${language})`,
-            },
-            extractedValues: simulated,
+            status: 'error',
+            output: null,
+            error: err instanceof Error ? err.message : 'Script execution failed',
           };
         }
-      } catch (err) {
-        return {
-          status: 'error',
-          output: null,
-          error: err instanceof Error ? err.message : 'Script execution failed',
-        };
+      } else {
+        // Use real runners for non-JS languages
+        try {
+          const result = await orchestrator.execute({
+            language: language as any,
+            code: script as string,
+            timeout: timeout as number,
+          });
+
+          return {
+            status: result.exitCode === 0 ? 'success' : 'error',
+            output: {
+              stdout: result.stdout,
+              stderr: result.stderr,
+              exitCode: result.exitCode,
+              language,
+            },
+            error: result.exitCode === 0 ? undefined : `Script failed: ${result.stderr}`,
+          };
+        } catch (err) {
+          return {
+            status: 'error',
+            output: null,
+            error: err instanceof Error ? err.message : 'Runner execution failed',
+          };
+        }
       }
     }
 
@@ -2499,7 +2552,9 @@ async function executeNodeTest(
     // ADDITIONAL SAMPLERS
     // =========================================================================
     case 'jdbc-request': {
-      const { connectionRef, queryType, query, resultVariable } = config;
+      // Support both 'query' and 'sql' fields for HOCON compatibility
+      const query = (config.query || config.sql) as string;
+      const { connectionRef, queryType, resultVariable } = config;
       log('debug', `JDBC request: ${queryType}, connectionRef: ${connectionRef}`);
 
       // Support variable substitution and context chaining from previous nodes
@@ -2513,46 +2568,52 @@ async function executeNodeTest(
 
       // Helper to resolve value from context or config
       const resolve = (key: string, defaultVal: unknown): unknown => {
-        // First, check if connectionRef is set and try to get from connection-prefixed variables
+        // 1. Direct context lookup FIRST (from inputs)
+        if (ctx[key] !== undefined) return ctx[key];
+        if (ctx[`variables.${key}`] !== undefined) return ctx[`variables.${key}`];
+
+        // 2. Second, check connectionRef prefixed variables
         if (connectionRef) {
-          // Context-setup creates variables like: pg_connection_host, pg_connection_port, etc.
           const connKey = `${connectionRef}_${key}`;
-          if (ctx[connKey] !== undefined) {
-            log('debug', `JDBC resolved ${key} from connectionRef: ${connKey} = ${ctx[connKey]}`);
-            return ctx[connKey];
-          }
-          // Also check for username vs user
+          if (ctx[connKey] !== undefined) return ctx[connKey];
+          
           if (key === 'user') {
             const usernameKey = `${connectionRef}_username`;
-            if (ctx[usernameKey] !== undefined) {
-              log('debug', `JDBC resolved user from connectionRef: ${usernameKey} = ${ctx[usernameKey]}`);
-              return ctx[usernameKey];
-            }
+            if (ctx[usernameKey] !== undefined) return ctx[usernameKey];
           }
         }
 
-        // Check if config value is a variable reference like ${host}
-        const configVal = dbConfig[key];
+        // 3. Third, check if config value is a variable reference like ${host}
+        const configVal = config[key];
         if (typeof configVal === 'string' && configVal.startsWith('${') && configVal.endsWith('}')) {
           const varName = configVal.slice(2, -1);
-          log('debug', `JDBC resolving variable ${varName} from context`);
-          return ctx[varName] ?? defaultVal;
+          const baseName = varName.startsWith('variables.') ? varName.slice(10) : varName;
+          const substituted = ctx[varName] ?? ctx[baseName] ?? ctx[`variables.${baseName}`];
+          if (substituted !== undefined) return substituted;
         }
-        // Direct context lookup
-        if (ctx[key] !== undefined) return ctx[key];
-        // Config value
+        
+        // 4. Literal config value
         if (configVal !== undefined) return configVal;
+        
+        // 5. Default
         return defaultVal;
       };
 
-      const host = resolve('host', resolve('DB_HOST', 'localhost'));
-      const port = resolve('port', resolve('DB_PORT', resolve('port_5432', 5432)));
-      const database = resolve('database', resolve('DB_NAME', 'postgres'));
-      const user = resolve('user', resolve('DB_USER', 'postgres'));
-      const password = resolve('password', resolve('DB_PASSWORD', 'postgres'));
+      // Resolve host with a hard override for 'localhost' when in cluster
+      let host = resolve('host', resolve('DB_HOST', 'yugabyte.testcraft.svc.cluster.local')) as string;
+      
+      if (process.env.K8S_IN_CLUSTER === 'true' && (host === 'localhost' || host === '127.0.0.1' || !host)) {
+        log('debug', `JDBC overriding host ${host} with cluster DNS`);
+        host = 'yugabyte.testcraft.svc.cluster.local';
+      }
+
+      const port = resolve('port', resolve('DB_PORT', resolve('port_5432', 5433)));
+      const database = resolve('database', resolve('DB_NAME', 'testcraft'));
+      const user = resolve('user', resolve('DB_USER', 'yugabyte'));
+      const password = resolve('password', resolve('DB_PASSWORD', 'yugabyte'));
 
       log('info', `JDBC connecting to ${host}:${port}/${database} as ${user}`);
-      log('debug', `JDBC password is ${password ? 'set' : 'NOT SET'} (length: ${password ? String(password).length : 0})`);
+      log('debug', `JDBC password length: ${password ? String(password).length : 0}`);
 
       const client = new pg.Client({
         host: host as string,
@@ -2565,9 +2626,9 @@ async function executeNodeTest(
       });
 
       try {
-        log('debug', `JDBC attempting to connect...`);
+        log('debug', `JDBC attempting to connect to ${finalHost}:${port}...`);
         await client.connect();
-        log('info', `JDBC connected successfully to ${host}:${port}/${database}`);
+        log('info', `JDBC connected successfully to ${finalHost}:${port}/${database}`);
         const result = await client.query(query as string);
         log('info', `JDBC query executed, rowCount: ${result.rowCount}`);
         await client.end();
@@ -2585,12 +2646,12 @@ async function executeNodeTest(
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'JDBC query failed';
         log('error', `JDBC error: ${errorMsg}`);
-        log('error', `JDBC connection details - host: ${host}, port: ${port}, database: ${database}, user: ${user}`);
+        log('error', `JDBC connection details - host: ${finalHost}, port: ${port}, database: ${database}, user: ${user}`);
         try { await client.end(); } catch { /* ignore */ }
         return {
           status: 'error',
           output: null,
-          error: errorMsg,
+          error: `JDBC Error: ${errorMsg} (host: ${finalHost})`,
         };
       }
     }
@@ -2828,39 +2889,114 @@ async function executeNodeTest(
 
     case 'kafka-producer': {
       const { bootstrapServers, topic, key, message, acks } = config;
-      log('debug', `Kafka producer: ${topic}`);
+      log('info', `Kafka producing to ${topic} on ${bootstrapServers}`);
 
-      const isValid = Boolean(bootstrapServers && topic);
-      return {
-        status: isValid ? 'success' : 'error',
-        output: {
-          bootstrapServers,
-          topic,
-          key,
-          messageLength: (message as string)?.length || 0,
-          acks: acks || 'all',
-          isValid,
-        },
-        error: isValid ? undefined : 'Missing required Kafka configuration',
-      };
+      try {
+        const kafka = new Kafka({
+          clientId: 'testcraft-tester',
+          brokers: (bootstrapServers as string).split(','),
+          retry: { retries: 2 },
+        });
+
+        const producer = kafka.producer();
+        await producer.connect();
+        
+        const result = await producer.send({
+          topic: topic as string,
+          messages: [{ key: key as string, value: message as string }],
+          acks: acks === 'all' ? -1 : (Number(acks) || 1) as any,
+        });
+
+        await producer.disconnect();
+
+        return {
+          status: 'success',
+          output: { topic, result, messageLength: (message as string)?.length || 0 },
+        };
+      } catch (err) {
+        log('error', `Kafka producer failed: ${(err as Error).message}`);
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
     }
 
     case 'kafka-consumer': {
-      const { bootstrapServers, topic, groupId, autoOffsetReset } = config;
-      log('debug', `Kafka consumer: ${topic}`);
+      const { bootstrapServers, topic, groupId, autoOffsetReset, timeout = 10000 } = config;
+      log('info', `Kafka consuming from ${topic} (group: ${groupId})`);
 
-      const isValid = Boolean(bootstrapServers && topic && groupId);
-      return {
-        status: isValid ? 'success' : 'error',
-        output: {
-          bootstrapServers,
-          topic,
-          groupId,
-          autoOffsetReset: autoOffsetReset || 'latest',
-          isValid,
-        },
-        error: isValid ? undefined : 'Missing required Kafka configuration',
-      };
+      try {
+        const kafka = new Kafka({
+          clientId: 'testcraft-tester',
+          brokers: (bootstrapServers as string).split(','),
+        });
+
+        const consumer = kafka.consumer({ groupId: groupId as string });
+        await consumer.connect();
+        await consumer.subscribe({ topic: topic as string, fromBeginning: autoOffsetReset === 'earliest' });
+
+        const messages: any[] = [];
+        return new Promise((resolve) => {
+          const timeoutId = setTimeout(async () => {
+            await consumer.disconnect();
+            resolve({
+              status: messages.length > 0 ? 'success' : 'timeout',
+              output: { topic, messageCount: messages.length, messages },
+              error: messages.length > 0 ? undefined : 'No messages received within timeout',
+            });
+          }, timeout as number);
+
+          consumer.run({
+            eachMessage: async ({ message }) => {
+              messages.push({
+                key: message.key?.toString(),
+                value: message.value?.toString(),
+                offset: message.offset,
+                timestamp: message.timestamp,
+              });
+              // For testing, we just need one or a few messages
+              if (messages.length >= 1) {
+                clearTimeout(timeoutId);
+                await consumer.disconnect();
+                resolve({
+                  status: 'success',
+                  output: { topic, messageCount: messages.length, messages },
+                });
+              }
+            },
+          }).catch(err => {
+            clearTimeout(timeoutId);
+            resolve({ status: 'error', output: null, error: err.message });
+          });
+        });
+      } catch (err) {
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
+    }
+
+    case 'redis-request': {
+      const { host = 'localhost', port = 6379, password, db = 0, command, args = [] } = config;
+      log('info', `Redis executing ${command} on ${host}:${port}`);
+
+      try {
+        const redis = new Redis({
+          host: host as string,
+          port: port as number,
+          password: password as string,
+          db: db as number,
+          retryStrategy: () => null, // Don't retry for tests
+          connectTimeout: 5000,
+        });
+
+        const result = await redis.call(command as string, ...(args as string[]));
+        await redis.quit();
+
+        return {
+          status: 'success',
+          output: { command, result, host, port },
+        };
+      } catch (err) {
+        log('error', `Redis command failed: ${(err as Error).message}`);
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
     }
 
     case 'mongodb-request': {
@@ -2883,70 +3019,76 @@ async function executeNodeTest(
     }
 
     // =========================================================================
-    // AI NODES
+    // AI NODES - REAL IMPLEMENTATION
     // =========================================================================
     case 'ai-test-generator': {
-      const { intent, targetNodeType, context } = config;
-      log('debug', `AI test generator: ${intent}`);
-
-      return {
-        status: 'success',
-        output: {
-          intent,
-          targetNodeType,
-          context,
-          generated: true,
-          suggestion: `Generated test for: ${intent}`,
-        },
-      };
+      const { intent, context } = config;
+      log('info', `AI generating test for: ${intent}`);
+      try {
+        const response = await aiService.generateTestData({
+          intent: intent as string,
+          schema: context as any,
+        });
+        return {
+          status: 'success',
+          output: response,
+        };
+      } catch (err) {
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
     }
 
     case 'ai-data-generator': {
-      const { schema, count, locale } = config;
-      log('debug', `AI data generator: ${count} records`);
-
-      // Generate mock data based on schema
-      const records: Record<string, unknown>[] = [];
-      const schemaObj = typeof schema === 'string' ? JSON.parse(schema) : schema;
-      const fieldCount = schemaObj?.fields?.length || 0;
-
-      for (let i = 0; i < (Number(count) || 1); i++) {
-        const record: Record<string, unknown> = { id: i + 1 };
-        if (schemaObj?.fields) {
-          for (const field of schemaObj.fields) {
-            record[field.name] = `${field.name}_${i + 1}`;
-          }
-        }
-        records.push(record);
+      const { schema, count } = config;
+      log('info', `AI generating ${count} records`);
+      try {
+        const response = await aiService.generateTestData({
+          intent: `Generate ${count} test data records`,
+          schema: schema as any,
+        });
+        return {
+          status: 'success',
+          output: response,
+        };
+      } catch (err) {
+        return { status: 'error', output: null, error: (err as Error).message };
       }
-
-      return {
-        status: 'success',
-        output: {
-          count: records.length,
-          locale: locale || 'en',
-          fieldCount,
-          data: records,
-        },
-      };
     }
 
     case 'ai-response-validator': {
-      const { intent, expectedBehavior, rules } = config;
-      const response = inputs.response;
-      log('debug', `AI response validator: ${intent}`);
+      const { intent, expectedBehavior } = config;
+      const responseToValidate = inputs.response;
+      log('info', `AI validating response for: ${intent}`);
+      try {
+        const result = await aiService.validateResponse({
+          intent: intent as string,
+          expectedBehavior: expectedBehavior as string,
+          response: responseToValidate as any,
+        });
+        return {
+          status: 'success',
+          output: result,
+        };
+      } catch (err) {
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
+    }
 
-      return {
-        status: 'success',
-        output: {
-          intent,
-          expectedBehavior,
-          rules,
-          response: response ? 'present' : 'missing',
-          validated: true,
-          confidence: 0.95,
-        },
-      };
+    case 'ai-anomaly-detector': {
+      const { metrics } = config;
+      log('info', 'AI detecting anomalies in metrics');
+      try {
+        const result = await aiService.analyzeAnomalies({
+          metrics: metrics as any,
+          baseline: inputs.baseline as any,
+        });
+        return {
+          status: 'success',
+          output: result,
+        };
+      } catch (err) {
+        return { status: 'error', output: null, error: (err as Error).message };
+      }
     }
 
     case 'ai-load-predictor': {

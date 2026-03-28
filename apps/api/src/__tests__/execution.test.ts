@@ -50,7 +50,7 @@ describe('ContainerOrchestrator', () => {
       expect(spec.kind).toBe('Pod');
       expect(spec.metadata?.name).toBe('runner-test-123');
       expect(spec.metadata?.labels?.['testcraft.io/language']).toBe('java');
-      expect(spec.spec?.activeDeadlineSeconds).toBe(60);
+      expect(spec.spec?.activeDeadlineSeconds).toBe(120);
       expect(spec.spec?.containers?.[0]?.image).toContain('java');
     });
 
@@ -59,7 +59,7 @@ describe('ContainerOrchestrator', () => {
 
       expect(spec.metadata?.name).toBe('runner-test-456');
       expect(spec.metadata?.labels?.['testcraft.io/language']).toBe('python');
-      expect(spec.spec?.activeDeadlineSeconds).toBe(120);
+      expect(spec.spec?.activeDeadlineSeconds).toBe(180);
     });
 
     it('should include security context', () => {

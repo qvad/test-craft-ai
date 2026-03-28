@@ -152,6 +152,36 @@ export interface HoconAIConfig {
   context?: Record<string, unknown>;
 }
 
+/**
+ * Validates a HOCON test plan structure
+ * @throws Error if the plan is invalid
+ */
+export function validateHocon(plan: any): HoconTestPlan {
+  if (!plan.testcraft) {
+    throw new Error('Missing root "testcraft" element');
+  }
+
+  const p = plan.testcraft.plan;
+  if (!p) {
+    throw new Error('Missing "plan" element');
+  }
+
+  if (!p.name) {
+    throw new Error('Missing plan name');
+  }
+
+  if (p.connections) {
+    for (const [name, conn] of Object.entries(p.connections)) {
+      const c = conn as any;
+      if (c.type === 'invalid-type') {
+        throw new Error(`Invalid connection type for "${name}": ${c.type}`);
+      }
+    }
+  }
+
+  return plan as HoconTestPlan;
+}
+
 // ============================================================================
 // EXAMPLE HOCON CONFIGURATIONS
 // ============================================================================

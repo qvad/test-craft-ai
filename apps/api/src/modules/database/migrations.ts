@@ -270,7 +270,7 @@ export const migrations: Migration[] = [
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     `,
     down: `
       DROP TABLE IF EXISTS users CASCADE;
@@ -293,8 +293,8 @@ export const migrations: Migration[] = [
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix);
-      CREATE INDEX idx_api_keys_user ON api_keys(user_id);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
     `,
     down: `
       DROP TABLE IF EXISTS api_keys CASCADE;
@@ -311,7 +311,7 @@ export const migrations: Migration[] = [
         expires_at TIMESTAMP WITH TIME ZONE NOT NULL
       );
 
-      CREATE INDEX idx_revoked_tokens_expires ON revoked_tokens(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
     `,
     down: `
       DROP TABLE IF EXISTS revoked_tokens CASCADE;
@@ -331,7 +331,7 @@ export const migrations: Migration[] = [
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_sessions_user ON user_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
     `,
     down: `
       DROP TABLE IF EXISTS user_sessions CASCADE;
@@ -357,12 +357,12 @@ export const migrations: Migration[] = [
         request_id TEXT
       );
 
-      CREATE INDEX idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
-      CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
-      CREATE INDEX idx_audit_logs_resource ON audit_logs(resource);
-      CREATE INDEX idx_audit_logs_action ON audit_logs(action);
-      CREATE INDEX idx_audit_logs_resource_id ON audit_logs(resource_id);
-      CREATE INDEX idx_audit_logs_user_time ON audit_logs(user_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_id ON audit_logs(resource_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_time ON audit_logs(user_id, timestamp DESC);
     `,
     down: `
       DROP TABLE IF EXISTS audit_logs CASCADE;
@@ -381,7 +381,7 @@ export const migrations: Migration[] = [
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_rag_documents_metadata ON rag_documents USING GIN (metadata);
+      CREATE INDEX IF NOT EXISTS idx_rag_documents_metadata ON rag_documents USING GIN (metadata);
     `,
     down: `
       DROP TABLE IF EXISTS rag_documents CASCADE;
@@ -427,8 +427,8 @@ export const migrations: Migration[] = [
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_tree_nodes_test_plan ON tree_nodes(test_plan_id);
-      CREATE INDEX idx_tree_nodes_parent ON tree_nodes(parent_id);
+      CREATE INDEX IF NOT EXISTS idx_tree_nodes_test_plan ON tree_nodes(test_plan_id);
+      CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id);
     `,
     down: `
       DROP TABLE IF EXISTS tree_nodes CASCADE;
@@ -452,8 +452,8 @@ export const migrations: Migration[] = [
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_test_executions_plan ON test_executions(test_plan_id);
-      CREATE INDEX idx_test_executions_status ON test_executions(status);
+      CREATE INDEX IF NOT EXISTS idx_test_executions_plan ON test_executions(test_plan_id);
+      CREATE INDEX IF NOT EXISTS idx_test_executions_status ON test_executions(status);
     `,
     down: `
       DROP TABLE IF EXISTS test_executions CASCADE;
@@ -477,7 +477,7 @@ export const migrations: Migration[] = [
         metrics JSONB DEFAULT '{}'
       );
 
-      CREATE INDEX idx_node_executions_execution ON node_executions(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_node_executions_execution ON node_executions(execution_id);
     `,
     down: `
       DROP TABLE IF EXISTS node_executions CASCADE;
@@ -498,7 +498,7 @@ export const migrations: Migration[] = [
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_ai_generations_node ON ai_generations(node_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_generations_node ON ai_generations(node_id);
     `,
     down: `
       DROP TABLE IF EXISTS ai_generations CASCADE;
@@ -515,7 +515,7 @@ export const migrations: Migration[] = [
         expires_at TIMESTAMP WITH TIME ZONE NOT NULL
       );
 
-      CREATE INDEX idx_rate_limits_expires ON rate_limits(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_rate_limits_expires ON rate_limits(expires_at);
     `,
     down: `
       DROP TABLE IF EXISTS rate_limits CASCADE;
@@ -533,8 +533,8 @@ export const migrations: Migration[] = [
         timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_metrics_name_time ON app_metrics(name, timestamp DESC);
-      CREATE INDEX idx_metrics_labels ON app_metrics USING GIN (labels);
+      CREATE INDEX IF NOT EXISTS idx_metrics_name_time ON app_metrics(name, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_metrics_labels ON app_metrics USING GIN (labels);
 
       -- Cleanup old metrics automatically (keep 7 days)
       -- Note: In production, use a scheduled job for this
@@ -559,9 +559,9 @@ export const migrations: Migration[] = [
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_test_plans_hocon_name ON test_plans_hocon(name);
-      CREATE INDEX idx_test_plans_hocon_tags ON test_plans_hocon USING GIN (tags);
-      CREATE INDEX idx_test_plans_hocon_updated ON test_plans_hocon(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_test_plans_hocon_name ON test_plans_hocon(name);
+      CREATE INDEX IF NOT EXISTS idx_test_plans_hocon_tags ON test_plans_hocon USING GIN (tags);
+      CREATE INDEX IF NOT EXISTS idx_test_plans_hocon_updated ON test_plans_hocon(updated_at DESC);
 
       CREATE TABLE IF NOT EXISTS test_plan_versions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -572,8 +572,8 @@ export const migrations: Migration[] = [
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      CREATE INDEX idx_test_plan_versions_plan ON test_plan_versions(plan_id);
-      CREATE INDEX idx_test_plan_versions_plan_version ON test_plan_versions(plan_id, version DESC);
+      CREATE INDEX IF NOT EXISTS idx_test_plan_versions_plan ON test_plan_versions(plan_id);
+      CREATE INDEX IF NOT EXISTS idx_test_plan_versions_plan_version ON test_plan_versions(plan_id, version DESC);
     `,
     down: `
       DROP TABLE IF EXISTS test_plan_versions CASCADE;

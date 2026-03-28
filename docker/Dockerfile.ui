@@ -2,22 +2,32 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy root package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci
+# Copy workspace packages
+COPY apps/web/package*.json ./apps/web/
+COPY packages/shared-types/package*.json ./packages/shared-types/
+
+# Install dependencies from root
+RUN npm install --workspace=@testcraft/web --include-workspace-root
 
 # Copy source
-COPY . .
+COPY apps/web ./apps/web
+COPY packages/shared-types ./packages/shared-types
+COPY tsconfig.json .
+COPY turbo.json .
 
-# Build
-RUN npm run build
+# Build using turbo
+RUN npm install -g turbo
+RUN turbo run build --filter=@testcraft/web
 
 # Production image
 FROM nginx:alpine
 
-COPY --from=builder /app/dist/testcraft-ai/browser /usr/share/nginx/html
+# The build output goes to apps/web/dist or similar depending on angular.json
+# Let's check angular.json to be sure of the path, but usually it's apps/web/dist
+COPY --from=builder /app/apps/web/dist/*/browser /usr/share/nginx/html
 
 EXPOSE 80
 

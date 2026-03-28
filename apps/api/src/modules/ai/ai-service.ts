@@ -24,11 +24,20 @@ export class AIService {
   private apiKey: string;
   private baseUrl: string;
   private model: string;
+  private provider: string;
 
   constructor() {
+    this.provider = process.env.AI_PROVIDER || 'anthropic';
     this.apiKey = process.env.AI_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-    this.baseUrl = process.env.AI_BASE_URL || 'https://api.anthropic.com/v1';
-    this.model = process.env.AI_MODEL || 'claude-sonnet-4-20250514';
+    this.model = process.env.AI_MODEL || (this.provider === 'ollama' ? 'llama3' : 'claude-sonnet-4-20250514');
+
+    if (process.env.AI_BASE_URL) {
+      this.baseUrl = process.env.AI_BASE_URL;
+    } else {
+      this.baseUrl = this.provider === 'ollama'
+        ? 'http://localhost:11434/api'
+        : 'https://api.anthropic.com/v1';
+    }
   }
 
   /**
@@ -169,8 +178,9 @@ export class AIService {
     prompt: string,
     options: { temperature: number; maxTokens: number }
   ): Promise<string> {
-    // This is a placeholder for the actual AI API call
-    // In production, implement actual API calls to Anthropic/OpenAI
+    if (this.provider === 'ollama') {
+      return this.callOllama(prompt, options);
+    }
 
     if (!this.apiKey) {
       logger.warn('No AI API key configured, using mock response');
@@ -198,6 +208,37 @@ export class AIService {
 
     const data = await response.json() as { content: Array<{ text: string }> };
     return data.content[0]?.text || '';
+  }
+
+  private async callOllama(
+    prompt: string,
+    options: { temperature: number; maxTokens: number }
+  ): Promise<string> {
+    try {
+      const response = await fetch(`${this.baseUrl}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [{ role: 'user', content: prompt }],
+          stream: false,
+          options: {
+            temperature: options.temperature,
+            num_predict: options.maxTokens,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as { message: { content: string } };
+      return data.message?.content || '';
+    } catch (error) {
+      logger.error({ error }, 'Ollama request failed');
+      throw error;
+    }
   }
 
   private buildCodeGenerationPrompt(request: AIGenerationRequest, ragContext: string): string {

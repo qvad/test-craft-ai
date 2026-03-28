@@ -13,31 +13,21 @@ export class K8sClient {
     this.kc = new k8s.KubeConfig();
 
     if (config.k8s.inCluster) {
+      logger.debug('[K8s] Loading in-cluster configuration');
       this.kc.loadFromCluster();
+      
+      // Override server URL to cluster IP to bypass DNS issues
+      const currentCluster = this.kc.getCurrentCluster();
+      if (currentCluster) {
+        currentCluster.server = 'https://10.96.0.1:443';
+        currentCluster.skipTLSVerify = true;
+      }
     } else if (config.k8s.configPath) {
+      logger.debug({ path: config.k8s.configPath }, '[K8s] Loading configuration from file');
       this.kc.loadFromFile(config.k8s.configPath);
     } else {
+      logger.debug('[K8s] Loading default configuration');
       this.kc.loadFromDefault();
-    }
-
-    // When http_proxy / https_proxy are set, tunnel-agent routes K8s API calls
-    // through the proxy and sets the IP address as TLS SNI, which Node.js v17+
-    // rejects with ERR_INVALID_ARG_VALUE. Fix: add the K8s server IP to no_proxy
-    // so the HTTP client connects to it directly, bypassing the proxy.
-    const currentCluster = this.kc.getCurrentCluster();
-    const serverMatch = currentCluster?.server?.match(/https?:\/\/([\d.]+)/);
-    if (serverMatch) {
-      const serverIp = serverMatch[1];
-      const noProxy = process.env.no_proxy || process.env.NO_PROXY || '';
-      if (!noProxy.split(',').map(s => s.trim()).includes(serverIp)) {
-        const updated = noProxy ? `${noProxy},${serverIp}` : serverIp;
-        process.env.no_proxy = updated;
-        process.env.NO_PROXY = updated;
-        logger.debug(
-          { server: currentCluster!.server, serverIp },
-          '[K8s] Added K8s server IP to no_proxy to bypass HTTP proxy'
-        );
-      }
     }
 
     this.coreApi = this.kc.makeApiClient(k8s.CoreV1Api);
@@ -64,17 +54,30 @@ export class K8sClient {
     );
 
     try {
-      const response = await this.coreApi.createNamespacedPod(namespace, pod);
+      let response;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          response = await this.coreApi.createNamespacedPod(namespace, pod);
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) throw err;
+          logger.warn({ err, retries }, `[K8s] Retry pod creation for ${podName}`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      
       logger.info(
         {
-          podName: response.body.metadata?.name,
+          podName: response!.body.metadata?.name,
           namespace,
-          uid: response.body.metadata?.uid,
+          uid: response!.body.metadata?.uid,
           operation: 'CREATE_POD_SUCCESS'
         },
-        `[K8s] Pod ${response.body.metadata?.name} created successfully`
+        `[K8s] Pod ${response!.body.metadata?.name} created successfully`
       );
-      return response.body;
+      return response!.body;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       logger.error(
@@ -100,7 +103,7 @@ export class K8sClient {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       logger.error(
-        { err, podName: name, namespace, errorMessage, operation: 'DELETE_POD_FAILED' },
+        { err, podName, namespace, errorMessage, operation: 'DELETE_POD_FAILED' },
         `[K8s] Failed to delete pod ${name}: ${errorMessage}`
       );
       throw err;

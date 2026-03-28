@@ -32,7 +32,7 @@ testcraft {
 
       {
         name = "Apply-Namespace"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "kubectl create namespace ${yb_namespace} --dry-run=client -o yaml | kubectl apply -f -"]
@@ -41,7 +41,7 @@ testcraft {
       },
       {
         name = "Deploy-YugabyteDB"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
@@ -50,7 +50,7 @@ testcraft {
       },
       {
         name = "Wait-Pods-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = ["wait", "--for=condition=Ready", "pod", "-l", "app=yb-tserver", "-n", "${yb_namespace}", "--timeout=300s"]
@@ -59,7 +59,7 @@ testcraft {
       },
       {
         name = "Wait-YSQL-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
@@ -71,7 +71,7 @@ testcraft {
 
       {
         name = "Create-Elle-Schema"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user       = "${db_user}"
@@ -117,7 +117,7 @@ testcraft {
 
       {
         name = "Elle-List-Append-Workload"
-        type = "Loop-Controller"
+        type = "loop-controller"
         config {
           duration_ms = ${test_duration_ms}
           concurrency = ${concurrency}
@@ -125,7 +125,7 @@ testcraft {
         children = [
           {
             name = "Pick-Transaction-Keys"
-            type = "Script-Node"
+            type = "script-sampler"
             config {
               language = "javascript"
               code     = """
@@ -143,7 +143,7 @@ testcraft {
           },
           {
             name = "Execute-Read-Append-Transaction"
-            type = "JDBC-Sampler"
+            type = "jdbc-request"
             config {
               connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
               user       = "${db_user}"
@@ -202,7 +202,7 @@ testcraft {
 
       {
         name = "Collect-History-For-Elle"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user           = "${db_user}"
@@ -227,7 +227,7 @@ testcraft {
 
       {
         name = "Elle-Cycle-Detector"
-        type = "Script-Node"
+        type = "script-sampler"
         config {
           language = "javascript"
           code     = """
@@ -425,7 +425,7 @@ testcraft {
 
       {
         name = "Final-Statistics"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user           = "${db_user}"

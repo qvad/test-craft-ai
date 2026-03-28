@@ -79,6 +79,7 @@ vi.mock('@kubernetes/client-node', () => ({
     loadFromFile: k8sMocks.mockLoadFromFile,
     loadFromDefault: k8sMocks.mockLoadFromDefault,
     makeApiClient: k8sMocks.mockMakeApiClient,
+    getCurrentCluster: vi.fn().mockReturnValue({ server: 'https://127.0.0.1:8443' }),
   })),
   CoreV1Api: class MockCoreV1Api {},
   Exec: vi.fn().mockImplementation(() => ({ exec: k8sMocks.mockExecFn })),

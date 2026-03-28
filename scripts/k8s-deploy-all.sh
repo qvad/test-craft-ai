@@ -7,31 +7,26 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 echo "=== TestCraft Full K8s Deployment ==="
 echo ""
 
-# Check if kind cluster exists
-if ! kind get clusters 2>/dev/null | grep -q "kind"; then
-    echo "Creating kind cluster..."
-    kind create cluster --config "$PROJECT_DIR/k8s/kind-config.yaml"
-
-    # Install nginx ingress
-    echo "Installing nginx ingress controller..."
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
-    kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=90s
+# Check if minikube cluster exists
+if ! minikube status 2>/dev/null | grep -q "Running"; then
+    echo "Starting minikube cluster..."
+    minikube start --driver=docker --cpus=4 --memory=8192
 fi
 
 # Build Docker images
 echo ""
 echo "Building API image..."
-docker build -t testcraft-api:latest -f "$PROJECT_DIR/docker/Dockerfile.api" "$PROJECT_DIR"
+sg docker -c "docker build -t testcraft-api:v2 -f \"$PROJECT_DIR/docker/Dockerfile.api\" \"$PROJECT_DIR\""
 
 echo ""
 echo "Building UI image..."
-docker build -t testcraft-ui:latest -f "$PROJECT_DIR/docker/Dockerfile.ui" "$PROJECT_DIR"
+sg docker -c "docker build -t testcraft-ui:latest -f \"$PROJECT_DIR/docker/Dockerfile.ui\" \"$PROJECT_DIR\""
 
-# Load images into kind
+# Load images into minikube
 echo ""
-echo "Loading images into kind..."
-kind load docker-image testcraft-api:latest
-kind load docker-image testcraft-ui:latest
+echo "Loading images into minikube..."
+minikube image load testcraft-api:v2
+minikube image load testcraft-ui:latest
 
 # Apply K8s manifests
 echo ""

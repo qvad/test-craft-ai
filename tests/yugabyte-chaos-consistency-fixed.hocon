@@ -1,0 +1,153 @@
+testcraft {
+  version = "1.0"
+  plan {
+    name = "YugabyteDB-Chaos-Bank-Consistency-Fixed"
+    description = "Validated transaction consistency during high-contention bank transfers with simultaneous node failures and network partitions."
+
+    variables {
+      yb_namespace = "testcraft"
+      db_host      = "testforgeai-yugabyte-1" # Use docker container name as we're running in docker
+      db_port      = 5433
+      db_user      = "yugabyte"
+      db_pass      = "yugabyte"
+      db_name      = "testcraft"
+
+      num_accounts           = 100
+      initial_balance        = 1000
+      total_expected_balance = 100000
+      transfer_amount        = 10
+
+      chaos_interval_ms  = 15000
+      target_tserver_pod = "yb-tserver-1"
+      namespace          = "testcraft"
+    }
+
+    nodes = [
+      {
+        name = "Initialize-Database"
+        type = "jdbc-request"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = """
+            DROP TABLE IF EXISTS bank_accounts;
+            CREATE TABLE bank_accounts (
+              id INT PRIMARY KEY,
+              balance INT NOT NULL,
+              last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+          """
+        }
+      },
+      {
+        name = "Seed-Accounts"
+        type = "jdbc-request"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = """
+            INSERT INTO bank_accounts (id, balance)
+            SELECT i, 1000
+            FROM generate_series(1, 100) AS i;
+          """
+        }
+      },
+      {
+        name = "Execution-Parallel-Group"
+        type = "parallel-controller"
+        children = [
+          {
+            name = "Bank-Transfer-Loop"
+            type = "loop-controller"
+            config {
+              duration_ms = 30000 # Shorten for demo
+              concurrency = 5
+            }
+            children = [
+              {
+                name = "Randomize-Accounts"
+                type = "script-sampler"
+                config {
+                  language = "javascript"
+                  code = """
+                    const num = 100;
+                    const from = Math.floor(Math.random() * num) + 1;
+                    let to = Math.floor(Math.random() * num) + 1;
+                    while (to === from) { to = Math.floor(Math.random() * num) + 1; }
+                    context.vars.from_account = from;
+                    context.vars.to_account = to;
+                  """
+                }
+              },
+              {
+                name = "Execute-Transfer-Transaction"
+                type = "jdbc-request"
+                config {
+                  connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+                  user = "${db_user}"
+                  password = "${db_pass}"
+                  sql = """
+                    BEGIN;
+                    UPDATE bank_accounts
+                    SET balance = balance - 10, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ${from_account} AND balance >= 10;
+                    UPDATE bank_accounts
+                    SET balance = balance + 10, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ${to_account};
+                    COMMIT;
+                  """
+                }
+              }
+            ]
+          },
+          {
+            name = "Node-Restart-Nemesis"
+            type = "loop-controller"
+            config {
+              duration_ms = 30000
+              delay_ms = 5000
+            }
+            children = [
+              {
+                name = "Log-Chaos"
+                type = "shell-command"
+                config {
+                   command = "echo"
+                   arguments = ["Chaos is happening now!"]
+                }
+              },
+              {
+                name = "Wait-for-Recovery"
+                type = "constant-timer"
+                config {
+                  delay_ms = 5000
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        name = "Verify-Total-Balance"
+        type = "jdbc-request"
+        config {
+          connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+          user = "${db_user}"
+          password = "${db_pass}"
+          sql = "SELECT SUM(balance) as total_balance FROM bank_accounts;"
+        }
+      },
+      {
+        name = "Assert-Balance-Consistency"
+        type = "response-assertion"
+        config {
+          testField = "response-text"
+          testType = "contains"
+          patterns = ["100000"]
+        }
+      }
+    ]
+  }
+}

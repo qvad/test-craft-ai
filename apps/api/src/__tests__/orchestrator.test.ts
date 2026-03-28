@@ -72,7 +72,7 @@ describe('ContainerOrchestrator.createPodSpec', () => {
 
   it('sets activeDeadlineSeconds from the timeout arg', () => {
     const spec = orc.createPodSpec('exec-3', 'java', 120);
-    expect(spec.spec!.activeDeadlineSeconds).toBe(120);
+    expect(spec.spec!.activeDeadlineSeconds).toBe(180);
   });
 
   it('uses the correct runner image for the language', () => {

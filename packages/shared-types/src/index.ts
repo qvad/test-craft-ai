@@ -1,5 +1,7 @@
 // Re-export node types
 export * from './nodes.js';
+export * from './hocon-schema.js';
+import { NodeType, NodeConfig } from './nodes.js';
 
 // Supported languages
 export type SupportedLanguage =

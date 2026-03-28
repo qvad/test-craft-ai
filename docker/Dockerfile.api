@@ -1,20 +1,32 @@
 FROM node:20-alpine
 
+# Install bash and kubectl
+RUN apk add --no-cache bash curl && \
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin/
+
 WORKDIR /app
 
 # Copy package files
-COPY apps/api/package*.json ./
+COPY package.json ./
+COPY apps/api/package.json ./apps/api/
+COPY packages/shared-types/package.json ./packages/shared-types/
 
-# Install dependencies
-RUN npm ci --only=production
+# Copy dependencies
+COPY packages/shared-types ./packages/shared-types
+COPY apps/api/src ./apps/api/src
+COPY apps/api/tsconfig.json ./apps/api/
 
-# Copy source
-COPY apps/api/src ./src
-COPY apps/api/tsconfig.json ./
+# Install ALL dependencies
+RUN npm install
 
 # Install tsx for running TypeScript
 RUN npm install -g tsx
 
 EXPOSE 3000
+
+# Set working directory to the API app
+WORKDIR /app/apps/api
 
 CMD ["tsx", "src/main.ts"]

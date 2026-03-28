@@ -63,6 +63,19 @@ DEBUG_TESTS=1 npm run test:nodes
 API_URL=http://testcraft.local/api/v1 npm run test:full
 ```
 
+## Local Dev Environment Variables
+
+Minimum env vars for local API development (set in shell or `.env`):
+```bash
+AUTH_SKIP_IN_DEV=true      # Bypasses all auth — standard local workflow
+DB_HOST=localhost
+DB_PORT=5433
+DB_USER=yugabyte
+DB_PASSWORD=yugabyte
+NODE_ENV=development
+```
+All env vars are defined in `apps/api/src/config/index.ts` — that file is the source of truth with defaults. Never read `process.env` directly in code.
+
 ## Infrastructure
 
 ```bash
@@ -104,6 +117,21 @@ Workspaces use npm with Turborepo orchestration. Cross-package imports use `@tes
 
 Fastify with plugin architecture. Server bootstrap in `src/main.ts` follows four phases: `createServer()` → `registerPlugins()` → `registerRoutes()` → `initializeDatabase()`.
 
+**Route modules registered in `main.ts`** (all under `/api/v1/`):
+- `health` — health checks (public)
+- `auth` — JWT + API key auth (public)
+- `executions` — test execution management
+- `containers` — K8s/Docker orchestration
+- `reporting` — JUnit/HTML report generation
+- `hocon` — HOCON plan parsing and storage
+- `context` — shared variable/state management
+- `testing` — node execution (`POST /test/node` — integration test target)
+- `vars` — GlobalVarsService (cluster-internal, used by runners)
+- `ai` — AI code generation (separate scoped plugin, stricter rate limiting)
+- `audit` — audit log (admin only)
+- `docs` — OpenAPI documentation (admin only)
+- `websocket` — real-time execution updates
+
 **Route module pattern:** Each module exports an async function registered with a prefix in `main.ts`:
 ```typescript
 // In src/modules/foo/routes.ts
@@ -124,7 +152,7 @@ All routes are under `/api/v1/` prefix. Request validation uses Zod schemas (par
 
 **Auth in development:** Set `AUTH_SKIP_IN_DEV=true` to bypass all auth checks — the plugin injects a hardcoded admin user. This is the standard local dev workflow.
 
-**Database:** `db` singleton from `src/modules/database/yugabyte-client.ts` wraps `pg.Pool`. 14 migrations in `migrations.ts` (001–014). In non-production, the API continues with a warning if DB is unavailable.
+**Database:** `db` singleton from `src/modules/database/yugabyte-client.ts` wraps `pg.Pool` with pgvector extension enabled (vector(1536) for RAG embeddings). 14 migrations in `migrations.ts` (001–014) with checksum-based tamper detection and rollback support. In non-production, the API continues with a warning if DB is unavailable.
 
 **Config:** All environment variables are loaded in `src/config/index.ts` via `requireEnv()` / `optionalEnv()` helpers. Never read `process.env` directly elsewhere — add new env vars to the config object.
 
@@ -132,7 +160,9 @@ All routes are under `/api/v1/` prefix. Request validation uses Zod schemas (par
 
 **`src/nodes.ts`** is the canonical source for all type definitions: `NodeType` (100+ string literal union), `NodeConfig` (discriminated union on `type` field), `BaseNodeConfig`, `SupportedLanguage`, `ExecutionRequest`, `ExecutionResult`, `TreeNode`, `TestPlan`, etc.
 
-**`src/index.ts`** re-exports everything from `nodes.ts` via `export *`. Never define types in `index.ts` directly — always add them to `nodes.ts`.
+**`src/hocon-schema.ts`** contains Zod validation schemas for HOCON test plans (re-exported from `src/index.ts`).
+
+**`src/index.ts`** re-exports everything from `nodes.ts` and `hocon-schema.ts` via `export *`. Never define types in `index.ts` directly — always add them to `nodes.ts`.
 
 ### Web (apps/web/)
 
@@ -149,6 +179,8 @@ Angular 21 with PrimeNG component library. All routes use `loadComponent` (lazy-
 ### Runner Containers (docker/runners/)
 
 Each language has a `Dockerfile` + `runner.sh`. Runners are Alpine Linux-based, run as non-root, accept code via files, execute with configurable timeout, and output structured JSON results. Important: Alpine uses BusyBox — no GNU date extensions (`%N` for nanoseconds).
+
+Runners receive `TESTCRAFT_API_URL` and `TESTCRAFT_EXECUTION_ID` env vars to read/write shared global variables via `GlobalVarsService` (`/api/v1/vars`). Resource limits per pod: 100m CPU request / 1 CPU limit, 256Mi RAM request / 1Gi limit.
 
 ### CLI (apps/cli/)
 

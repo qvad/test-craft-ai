@@ -117,7 +117,7 @@ export interface ExecutionError {
 export interface NodeExecutionResult {
   nodeId: string;
   nodeName: string;
-  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'warning';
   startedAt?: Date;
   completedAt?: Date;
   duration?: number;

@@ -50,7 +50,7 @@ testcraft {
 
       {
         name = "Apply-Namespace"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = [
@@ -63,7 +63,7 @@ testcraft {
 
       {
         name = "Deploy-YugabyteDB"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = ["apply", "-f", "k8s/yugabyte.yaml", "-n", "${yb_namespace}"]
@@ -73,7 +73,7 @@ testcraft {
 
       {
         name = "Wait-Pods-Ready"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "kubectl"
           arguments = [
@@ -88,7 +88,7 @@ testcraft {
 
       {
         name = "Wait-YSQL-Accepting-Connections"
-        type = "Shell-Command"
+        type = "shell-command"
         config {
           command   = "bash"
           arguments = ["-c", "for i in $(seq 1 30); do kubectl exec -n ${yb_namespace} yb-tserver-0 -- ysqlsh -h localhost -U yugabyte -c \"SELECT 1\" >/dev/null 2>&1 && echo YSQL-ready && exit 0; sleep 10; done; exit 1"]
@@ -102,7 +102,7 @@ testcraft {
 
       {
         name = "Bootstrap-Elle-Schema"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user       = "${db_user}"
@@ -162,13 +162,13 @@ testcraft {
 
       {
         name = "Workload-and-Chaos"
-        type = "Parallel-Controller"
+        type = "parallel-controller"
         children = [
 
           # ── Arm 1: Elle list-append workload ────────────────────────────────────
           {
             name = "Elle-Workload"
-            type = "Loop-Controller"
+            type = "loop-controller"
             config {
               duration_ms = ${test_duration_ms}
               concurrency = ${concurrency}
@@ -176,7 +176,7 @@ testcraft {
             children = [
               {
                 name = "Pick-Keys"
-                type = "Script-Node"
+                type = "script-sampler"
                 config {
                   language = "javascript"
                   code     = """
@@ -194,7 +194,7 @@ testcraft {
               },
               {
                 name = "Append-Transaction"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user       = "${db_user}"
@@ -247,7 +247,7 @@ testcraft {
           # ── Arm 2: Rolling pod-delete nemesis ────────────────────────────────────
           {
             name = "Pod-Delete-Nemesis"
-            type = "Loop-Controller"
+            type = "loop-controller"
             config {
               duration_ms = ${test_duration_ms}
               delay_ms    = ${restart_interval}
@@ -255,7 +255,7 @@ testcraft {
             children = [
               {
                 name = "Select-Target-Pod"
-                type = "Script-Node"
+                type = "script-sampler"
                 config {
                   language = "javascript"
                   code     = """
@@ -268,7 +268,7 @@ testcraft {
               },
               {
                 name = "Log-Pod-Delete-Start"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user       = "${db_user}"
@@ -281,7 +281,7 @@ testcraft {
               },
               {
                 name = "Delete-TServer-Pod"
-                type = "Kubernetes-Node"
+                type = "k8s-pod"
                 config {
                   action      = "delete-pod"
                   namespace   = "${yb_namespace}"
@@ -291,7 +291,7 @@ testcraft {
               },
               {
                 name = "Wait-Pod-Restart"
-                type = "Shell-Command"
+                type = "shell-command"
                 config {
                   command   = "kubectl"
                   arguments = [
@@ -305,7 +305,7 @@ testcraft {
               },
               {
                 name = "Log-Pod-Delete-End"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user       = "${db_user}"
@@ -329,7 +329,7 @@ testcraft {
           # ── Arm 3: Network-partition nemesis (cordon / uncordon) ──────────────────
           {
             name = "Network-Partition-Nemesis"
-            type = "Loop-Controller"
+            type = "loop-controller"
             config {
               duration_ms = ${test_duration_ms}
               delay_ms    = ${partition_pause}
@@ -337,7 +337,7 @@ testcraft {
             children = [
               {
                 name = "Pick-Partition-Target"
-                type = "Script-Node"
+                type = "script-sampler"
                 config {
                   language = "javascript"
                   code     = """
@@ -348,7 +348,7 @@ testcraft {
               },
               {
                 name = "Log-Partition-Start"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user       = "${db_user}"
@@ -361,7 +361,7 @@ testcraft {
               },
               {
                 name = "Cordon-TServer-Node"
-                type = "Kubernetes-Node"
+                type = "k8s-pod"
                 config {
                   action    = "cordon-node"
                   namespace = "${yb_namespace}"
@@ -370,14 +370,14 @@ testcraft {
               },
               {
                 name = "Partition-Hold"
-                type = "Constant-Timer"
+                type = "constant-timer"
                 config {
                   delay_ms = ${partition_hold_ms}
                 }
               },
               {
                 name = "Uncordon-TServer-Node"
-                type = "Kubernetes-Node"
+                type = "k8s-pod"
                 config {
                   action    = "uncordon-node"
                   namespace = "${yb_namespace}"
@@ -386,7 +386,7 @@ testcraft {
               },
               {
                 name = "Log-Partition-End"
-                type = "JDBC-Sampler"
+                type = "jdbc-request"
                 config {
                   connection = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
                   user       = "${db_user}"
@@ -413,7 +413,7 @@ testcraft {
 
       {
         name = "Collect-Committed-History"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user           = "${db_user}"
@@ -438,7 +438,7 @@ testcraft {
 
       {
         name = "Collect-Chaos-Events"
-        type = "JDBC-Sampler"
+        type = "jdbc-request"
         config {
           connection     = "jdbc:postgresql://${db_host}:${db_port}/${db_name}"
           user           = "${db_user}"
@@ -467,7 +467,7 @@ testcraft {
 
       {
         name = "Elle-Strict-Serializability-Checker"
-        type = "Script-Node"
+        type = "script-sampler"
         config {
           language = "javascript"
           code     = """

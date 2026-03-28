@@ -39,6 +39,11 @@ yarn-error.log
 
 # Miscellaneous
 /.angular/cache
+apps/web/.angular/
+
+# Generated / runtime artifacts
+api.log
+validate_results.txt
 .sass-cache/
 /connect.lock
 /coverage

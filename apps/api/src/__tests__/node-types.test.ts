@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { NODE_CATEGORIES } from '../../packages/shared-types/src/nodes.js';
+import { NODE_CATEGORIES } from '@testcraft/shared-types';
 
 describe('Node Types', () => {
   describe('NODE_CATEGORIES', () => {

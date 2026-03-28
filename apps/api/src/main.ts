@@ -238,6 +238,42 @@ async function start(): Promise<void> {
     await registerPlugins(app);
     await registerRoutes(app);
 
+    // Stateful placeholder routes for integration tests
+    const users = new Map<string, any>();
+    app.get('/api/v1/users', async () => ({ users: Array.from(users.values()) }));
+    app.post('/api/v1/users', async (req: any) => {
+      const id = req.body.id || `user-${Date.now()}`;
+      const user = { id, ...req.body, status: 'created' };
+      users.set(id, user);
+      return user;
+    });
+    app.get('/api/v1/users/:id', async (req: any, reply) => {
+      const user = users.get(req.params.id);
+      if (!user) return reply.status(404).send({ error: 'Not Found' });
+      return user;
+    });
+    app.put('/api/v1/users/:id', async (req: any, reply) => {
+      if (!users.has(req.params.id)) return reply.status(404).send({ error: 'Not Found' });
+      const user = { ...users.get(req.params.id), ...req.body };
+      users.set(req.params.id, user);
+      return { status: 'updated', user };
+    });
+    app.patch('/api/v1/users/:id', async (req: any, reply) => {
+      if (!users.has(req.params.id)) return reply.status(404).send({ error: 'Not Found' });
+      const user = { ...users.get(req.params.id), ...req.body };
+      users.set(req.params.id, user);
+      return { status: 'updated', user };
+    });
+    app.delete('/api/v1/users/:id', async (req: any, reply) => {
+      if (!users.has(req.params.id)) return reply.status(404).send({ error: 'Not Found' });
+      users.delete(req.params.id);
+      return { status: 'deleted' };
+    });
+    app.get('/api/v1/products', async () => ({ products: [] }));
+    app.get('/api/v1/products/search', async () => ({ products: [] }));
+    app.post('/api/v1/auth/token', async () => ({ token: 'mock-token' }));
+    app.get('/api/v1/version', async () => ({ version: '1.0.0' }));
+
     // Initialize database
     await initializeDatabase();
 
